@@ -1,11 +1,11 @@
-import { auth, db } from "./firebase.js?v=19";
+import { auth, db } from "./firebase.js?v=20";
 import {
   GoogleAuthProvider, signInWithPopup, signInWithEmailAndPassword,
   createUserWithEmailAndPassword, sendPasswordResetEmail, onAuthStateChanged, signOut, sendEmailVerification
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
   collection, doc, getDoc, getDocs, onSnapshot, setDoc, updateDoc, deleteDoc,
-  writeBatch, serverTimestamp
+  writeBatch, serverTimestamp, FieldPath
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
 const $ = (id) => document.getElementById(id);
@@ -924,6 +924,14 @@ async function importText(text) {
     try { data = JSON.parse(text.replace(/[“”]/g, '"').replace(/[‘’]/g, "'")); }
     catch (e) { out.textContent = `That looks cut off (I got ${text.length.toLocaleString()} characters). Ask Claude to split it into smaller pieces.`; out.dataset.kind = "error"; return false; }
     if (data.kind !== "uniquely-soaring-import" || !/^[A-Za-z]+$/.test(data.client || "")) throw new Error("not ours");
+    // Small fix: change one value inside a saved document, e.g. {"fix":{"doc":"info/plans-b","field":["plans","thu","by","5-10"],"value":...}}
+    if (data.fix) {
+      const f = data.fix;
+      if (!/^[a-z]+\/[a-z-]+$/i.test(f.doc || "") || !Array.isArray(f.field) || !f.field.length) throw new Error("bad fix");
+      await updateDoc(doc(db, "clients", data.client, ...f.doc.split("/")), new FieldPath(...f.field), f.value);
+      out.textContent = "Fixed ✓"; out.dataset.kind = "ok";
+      return true;
+    }
     const batch = writeBatch(db);
     const top = { label: data.label || "Client: " + data.client, updatedAt: serverTimestamp() };
     if (data.switchDate) top.switchDate = data.switchDate;
