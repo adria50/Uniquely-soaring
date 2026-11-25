@@ -385,7 +385,7 @@ async function renderGoals(client) {
   try { const g = await getDoc(doc(db, "clients", client.id, "info", "goals")); goals = g.exists() ? g.data() : null; }
   catch (e) { $("page").innerHTML = `<div class="card"><p class="error">Couldn't load goals. Check your connection.</p></div>`; return; }
   if (!goals) { $("page").innerHTML = `<div class="card"><p class="muted">No goals added yet.</p></div>`; return; }
-  LEVELS = [["own", goals.ownLabel || "On their own"], ["help", "With help"], ["not", "Not today"]];
+  LEVELS = [["own", goals.ownLabel || "On his own"], ["help", "With help"], ["not", "Not today"]];
   draft = { date: dateKey(new Date()), ratings: {}, note: "" }; openSkill = null;
   unsub = onSnapshot(collection(db, "clients", client.id, "logs"), (snap) => {
     logs = snap.docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => (b.date || "").localeCompare(a.date || "") || (b.at || 0) - (a.at || 0));
