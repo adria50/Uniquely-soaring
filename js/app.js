@@ -1,4 +1,4 @@
-import { auth, db } from "./firebase.js?v=16";
+import { auth, db } from "./firebase.js?v=17";
 import {
   GoogleAuthProvider, signInWithPopup, signInWithEmailAndPassword,
   createUserWithEmailAndPassword, sendPasswordResetEmail, onAuthStateChanged, signOut, sendEmailVerification
@@ -76,6 +76,7 @@ async function loadAccess(user) {
   } else {
     const a = await getDoc(doc(db, "access", (user.email || "").toLowerCase())).catch(() => null);
     const ids = (a && a.exists() && a.data().clients) || [];
+    me.supTab = (a && a.exists() && a.data().supTab) || null;
     for (const id of ids) {
       const c = await getDoc(doc(db, "clients", id)).catch(() => null);
       me.clients.push({ id, label: shortLabel((c && c.exists() && c.data().label) || "Client: " + id) });
@@ -99,12 +100,13 @@ $("verify-resend").onclick = async () => {
 async function drawAccess() {
   const list = $("access-list");
   let rows = [];
-  try { rows = (await getDocs(collection(db, "access"))).docs.map((d) => ({ email: d.id, clients: d.data().clients || [] })); }
+  try { rows = (await getDocs(collection(db, "access"))).docs.map((d) => ({ email: d.id, clients: d.data().clients || [], supTab: d.data().supTab || null })); }
   catch (e) { list.innerHTML = `<p class="error small">Couldn't load the access list.</p>`; return; }
   const label = (id) => (me.clients.find((c) => c.id === id) || { label: id }).label.replace(/^Client:\s*/, "");
-  list.innerHTML = rows.length ? rows.map((r) => `<div class="access-row"><div><b>${esc(r.email)}</b><div class="muted small">${esc(r.clients.map(label).join(", ") || "Nothing")}</div></div><button class="link del" data-rm="${esc(r.email)}">Remove</button></div>`).join("")
+  list.innerHTML = rows.length ? rows.map((r) => `<div class="access-row"><div><b>${esc(r.email)}</b><div class="muted small">${esc(r.clients.map(label).join(", ") || "Nothing")}${r.supTab ? " · edits " + esc((SUP_TABS.find((t) => t.id === r.supTab) || {}).name || r.supTab) : ""}</div></div><button class="link del" data-rm="${esc(r.email)}">Remove</button></div>`).join("")
     : `<p class="muted small">Only you, so far.</p>`;
-  $("access-picks").innerHTML = me.clients.map((c) => `<label class="pick"><input type="checkbox" value="${esc(c.id)}"> ${esc(c.label.replace(/^Client:\s*/, ""))}</label>`).join("");
+  $("access-picks").innerHTML = me.clients.map((c) => `<label class="pick"><input type="checkbox" value="${esc(c.id)}"> ${esc(c.label.replace(/^Client:\s*/, ""))}</label>`).join("")
+    + `<label for="access-tab">Their supervisor tab (the one they can change)</label><select id="access-tab"><option value="">None</option>${SUP_TABS.map((t) => `<option value="${t.id}">${esc(t.name)}</option>`).join("")}</select>`;
   list.querySelectorAll("[data-rm]").forEach((b) => (b.onclick = async () => {
     if (!confirm(`Remove ${b.dataset.rm}? They won't be able to see anything.`)) return;
     await deleteDoc(doc(db, "access", b.dataset.rm)); drawAccess();
@@ -118,7 +120,9 @@ $("access-form").onsubmit = async (e) => {
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) { msg.textContent = "That email doesn't look right."; msg.className = "small error"; return; }
   if (!clients.length) { msg.textContent = "Check at least one client."; msg.className = "small error"; return; }
   try {
-    await setDoc(doc(db, "access", email), { clients, updatedAt: serverTimestamp() });
+    const supTab = $("access-tab").value || null;
+    if (supTab && !clients.includes("SUP")) clients.push("SUP");
+    await setDoc(doc(db, "access", email), { clients, supTab, updatedAt: serverTimestamp() });
     msg.textContent = `Done. ${email} can sign in at uniquelysoaring.com now.`; msg.className = "small ok";
     $("access-email").value = ""; drawAccess();
   } catch (err) { msg.textContent = "Didn't save. Try again."; msg.className = "small error"; }
@@ -265,6 +269,7 @@ async function renderSupTab(client, tab) {
   $("sup-todo").innerHTML = `<div id="todo-wrap"><p class="muted">Loading…</p></div>`;
   const col = collection(db, "clients", "SUP", "people", tab.id, "todos");
   todoPath = ["clients", "SUP", "people", tab.id, "todos"];
+  todoReadOnly = !(me.admin || me.supTab === tab.id);
   unsub = onSnapshot(col, (snap) => { todos = snap.docs.map((d) => ({ id: d.id, ...d.data() })); drawTodo(client); },
     () => { $("todo-wrap").innerHTML = `<div class="card"><p class="error">Couldn't load the to-do list.</p></div>`; });
   // their weekly schedule
@@ -272,7 +277,8 @@ async function renderSupTab(client, tab) {
     const sd = await getDoc(doc(db, "clients", "SUP", "people", tab.id));
     const all = (sd.exists() && sd.data().schedule) || [];
     const flex = (sd.exists() && sd.data().flex) || null; // hours they schedule themselves
-    if (supEdit === tab.id) return drawSupEditor(client, tab, all, flex);
+    const mine = me.admin || me.supTab === tab.id;
+    if (supEdit === tab.id && mine) return drawSupEditor(client, tab, all, flex);
     const rotates = all.some((it) => it.w);
     if (!supWeek) supWeek = Math.min(5, Math.ceil(new Date().getDate() / 7));
     const items = all.filter((it) => !it.w || it.w.includes(supWeek));
@@ -285,8 +291,8 @@ async function renderSupTab(client, tab) {
     const flexRow = flex ? `<div class="block-row flex-row"><div class="block-time">${flexH} hrs</div><div class="block-main"><b>${esc(flex.t || "Flexible")}</b>${flex.sb ? `<div class="muted small">${esc(flex.sb)}</div>` : ""}</div></div>` : "";
     $("sup-sched").innerHTML = weekBtns + (sumTxt ? `<p class="hint">${sumTxt}</p>` : "") + flexRow + (byDay.length ? byDay.map(([d, l]) => `<div class="block-row"><div class="block-time">${DAYS[d]}</div><div class="block-main">${l.map((it) => `<div><b>${fmtHM(it.s)}–${fmtHM(it.e)}</b> ${esc(it.t || "")}${it.sb ? `<div class="muted small">${esc(it.sb)}</div>` : ""}</div>`).join("")}</div></div>`).join("")
       : `<p class="muted">No hours set yet.</p>`);
-    $("sup-sched").insertAdjacentHTML("beforeend", `<button class="btn" id="sup-edit" type="button" style="margin-top:14px">✏️ Edit schedule</button>`);
-    $("sup-edit").onclick = () => { supEdit = tab.id; supForm = null; stopLive(); renderSupTab(client, tab); };
+    if (mine) $("sup-sched").insertAdjacentHTML("beforeend", `<button class="btn" id="sup-edit" type="button" style="margin-top:14px">✏️ Edit schedule</button>`);
+    if (mine) $("sup-edit").onclick = () => { supEdit = tab.id; supForm = null; stopLive(); renderSupTab(client, tab); };
     $("sup-sched").querySelectorAll("[data-supwk]").forEach((b) => (b.onclick = () => { supWeek = +b.dataset.supwk; stopLive(); renderSupTab(client, tab); }));
   } catch (e) { $("sup-sched").innerHTML = `<p class="error small">Couldn't load the schedule.</p>`; }
 }
@@ -305,8 +311,9 @@ function dueLabel(due) {
 }
 const byDue = (a, b) => (a.due || "9999") < (b.due || "9999") ? -1 : (a.due || "9999") > (b.due || "9999") ? 1 : 0;
 
-let todoPath = [];
+let todoPath = [], todoReadOnly = false;
 function renderTodo(client, path) {
+  todoReadOnly = false;
   todoPath = path || ["clients", client.id, "todos"];
   $("page").innerHTML = `<div id="todo-wrap"><p class="muted">Loading…</p></div>`;
   const col = collection(db, ...todoPath);
@@ -354,6 +361,11 @@ function drawTodo(client) {
       ${done.map((t) => row(t, client)).join("") || `<p class="muted">Nothing completed yet.</p>`}</details>
     </div>`;
   $("done-box").ontoggle = (e) => (doneOpen = e.target.open);
+  if (todoReadOnly) {
+    $("add-form").remove();
+    $("todo-wrap").querySelectorAll("[data-act]").forEach((el) => (el.disabled = true));
+    return;
+  }
   $("add-form").onsubmit = async (e) => {
     e.preventDefault();
     const text = $("add-text").value.trim(); if (!text) return;
