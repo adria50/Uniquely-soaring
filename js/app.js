@@ -1,4 +1,4 @@
-import { auth, db } from "./firebase.js?v=10";
+import { auth, db } from "./firebase.js?v=11";
 import {
   GoogleAuthProvider, signInWithPopup, signInWithEmailAndPassword,
   createUserWithEmailAndPassword, sendPasswordResetEmail, onAuthStateChanged, signOut, sendEmailVerification
@@ -62,22 +62,26 @@ setMode("signin");
 // ---------------- Who am I, and which clients can I see ----------------
 let me = { user: null, admin: false, clients: [] }; // clients: [{id,label}]
 
+// "Client: AW (Aria)" shows as "Client: AW"
+const shortLabel = (l) => String(l).replace(/\s*\([^)]*\)\s*$/, "");
+// Supervisors first, then clients
+const sortKey = (c) => (c.id === "SUP" ? "0" : "1" + c.id);
 async function loadAccess(user) {
   me = { user, admin: false, clients: [] };
   // Only the admin may list everyone's access, so if this works, it's Adria.
   try { await getDocs(collection(db, "access")); me.admin = true; } catch (e) { me.admin = false; }
   if (me.admin) {
     const snap = await getDocs(collection(db, "clients"));
-    me.clients = snap.docs.map((d) => ({ id: d.id, label: d.data().label || "Client: " + d.id }));
+    me.clients = snap.docs.map((d) => ({ id: d.id, label: shortLabel(d.data().label || "Client: " + d.id) }));
   } else {
     const a = await getDoc(doc(db, "access", (user.email || "").toLowerCase())).catch(() => null);
     const ids = (a && a.exists() && a.data().clients) || [];
     for (const id of ids) {
       const c = await getDoc(doc(db, "clients", id)).catch(() => null);
-      me.clients.push({ id, label: (c && c.exists() && c.data().label) || "Client: " + id });
+      me.clients.push({ id, label: shortLabel((c && c.exists() && c.data().label) || "Client: " + id) });
     }
   }
-  me.clients.sort((a, b) => a.id.localeCompare(b.id));
+  me.clients.sort((a, b) => sortKey(a).localeCompare(sortKey(b)));
 }
 
 // ---------------- Email check (for people who signed up with a password) ----------------
@@ -159,7 +163,9 @@ function renderHome() {
 function renderClient(client, page) {
   $("client-title").textContent = client.label;
   $("back-home").hidden = !me.admin && me.clients.length === 1;
-  $("page-tabs").innerHTML = PAGES.map(([k, l]) =>
+  const pages = client.id === "SUP" ? PAGES.filter(([k]) => ["todo", "staffing", "schedule"].includes(k)) : PAGES;
+  if (!pages.some(([k]) => k === page)) page = "todo";
+  $("page-tabs").innerHTML = pages.map(([k, l]) =>
     `<a href="#/c/${esc(client.id)}/${k}" class="tab" aria-current="${k === page}">${l}</a>`).join("");
   show("client");
   if (page === "todo") return renderTodo(client);
