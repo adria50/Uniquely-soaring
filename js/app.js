@@ -1,4 +1,4 @@
-import { auth, db } from "./firebase.js?v=13";
+import { auth, db } from "./firebase.js?v=14";
 import {
   GoogleAuthProvider, signInWithPopup, signInWithEmailAndPassword,
   createUserWithEmailAndPassword, sendPasswordResetEmail, onAuthStateChanged, signOut, sendEmailVerification
@@ -183,6 +183,7 @@ const SUP_TABS = [
   { id: "dlipscomb", name: "DLipscomb", supervises: "EzW" },
   { id: "third", name: "TSupervisor", supervises: "EdW" }
 ];
+let supWeek = 0;
 async function renderSupTab(client, tab) {
   $("page").innerHTML = `
     <div class="card"><h2>${esc(tab.name)}</h2>
@@ -198,11 +199,17 @@ async function renderSupTab(client, tab) {
   // their weekly schedule
   try {
     const sd = await getDoc(doc(db, "clients", "SUP", "people", tab.id));
-    const items = (sd.exists() && sd.data().schedule) || [];
+    const all = (sd.exists() && sd.data().schedule) || [];
+    const rotates = all.some((it) => it.w);
+    if (!supWeek) supWeek = Math.min(5, Math.ceil(new Date().getDate() / 7));
+    const items = all.filter((it) => !it.w || it.w.includes(supWeek));
     const byDay = [1, 2, 3, 4, 5, 6, 0].map((d) => [d, items.filter((it) => (it.d || []).includes(d)).sort((a, b) => mins(a.s) - mins(b.s))]).filter(([, l]) => l.length);
     const total = items.reduce((m, it) => m + (it.d || []).length * (mins(it.e) - mins(it.s)), 0);
-    $("sup-sched").innerHTML = (total ? `<p class="hint">${Math.round(total / 6) / 10} hrs a week</p>` : "") + (byDay.length ? byDay.map(([d, l]) => `<div class="block-row"><div class="block-time">${DAYS[d]}</div><div class="block-main">${l.map((it) => `<div><b>${fmtHM(it.s)}–${fmtHM(it.e)}</b> ${esc(it.t || "")}${it.sb ? `<div class="muted small">${esc(it.sb)}</div>` : ""}</div>`).join("")}</div></div>`).join("")
+    const nowWk = Math.min(5, Math.ceil(new Date().getDate() / 7));
+    const weekBtns = rotates ? `<div class="days">${[1, 2, 3, 4, 5].map((w) => `<button class="day" aria-pressed="${w === supWeek}" data-supwk="${w}">Week ${w}${w === nowWk ? " · now" : ""}</button>`).join("")}</div>` : "";
+    $("sup-sched").innerHTML = weekBtns + (total ? `<p class="hint">${Math.round(total / 6) / 10} hrs ${rotates ? "in week " + supWeek + " of the month" : "a week"}</p>` : "") + (byDay.length ? byDay.map(([d, l]) => `<div class="block-row"><div class="block-time">${DAYS[d]}</div><div class="block-main">${l.map((it) => `<div><b>${fmtHM(it.s)}–${fmtHM(it.e)}</b> ${esc(it.t || "")}${it.sb ? `<div class="muted small">${esc(it.sb)}</div>` : ""}</div>`).join("")}</div></div>`).join("")
       : `<p class="muted">No hours set yet.</p>`);
+    $("sup-sched").querySelectorAll("[data-supwk]").forEach((b) => (b.onclick = () => { supWeek = +b.dataset.supwk; stopLive(); renderSupTab(client, tab); }));
   } catch (e) { $("sup-sched").innerHTML = `<p class="error small">Couldn't load the schedule.</p>`; }
 }
 
