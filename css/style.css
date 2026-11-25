@@ -229,3 +229,4 @@ textarea { width: 100%; padding: 10px 14px; font: inherit; font-size: .9rem; col
 .notice p { margin: 0 0 10px; }
 .notice .link { margin-top: 10px; }
 .small.ok { color: var(--ok); }
+.flex-row { background: #f3f7fe; margin: 0 -12px 6px; padding: 12px; border-radius: 10px; border-top: 0; }
