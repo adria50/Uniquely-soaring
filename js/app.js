@@ -1,4 +1,4 @@
-import { auth, db } from "./firebase.js?v=17";
+import { auth, db } from "./firebase.js?v=18";
 import {
   GoogleAuthProvider, signInWithPopup, signInWithEmailAndPassword,
   createUserWithEmailAndPassword, sendPasswordResetEmail, onAuthStateChanged, signOut, sendEmailVerification
@@ -417,17 +417,37 @@ function coverOf(it) {
   return { who: it.t, kind: "program" };
 }
 
-let sched = { current: [], sdp: [], switchDate: null, staff: [] };
+let sched = { current: [], sdp: [], switchDate: null, staff: [] }, plans = {};
+// What a "Day Program" block holds on a given date (from the day program plans)
+const PLAN_DAY = { 2: "tue", 3: "wed", 4: "thu", 5: "fri" };
+function planOn(it, date) {
+  const k = it.plan || (it.t === "Day Program" ? PLAN_DAY[date.getDay()] : null);
+  const p = k && plans[k]; if (!p) return null;
+  if (p.tasks) return { title: p.title, tasks: p.tasks };
+  const v = p.by && p.by[Math.ceil(date.getDate() / 7) + "-" + date.getMonth()]; if (!v) return null;
+  return { title: v[0], options: v[1].map((i) => p.opts[i]).filter(Boolean) };
+}
+function planHTML(pl) {
+  if (!pl) return "";
+  if (pl.tasks) return `<ul class="tasks">${pl.tasks.map((t) => `<li><span class="muted">${fmtHM(t.s)}–${fmtHM(t.e)}</span> ${esc(t.t)}${t.sb ? ` <span class="muted">· ${esc(t.sb)}</span>` : ""}</li>`).join("")}</ul>`;
+  return `<ul class="tasks">${pl.options.length > 1 ? `<li class="muted">Pick one:</li>` : ""}${pl.options.map((o) => `<li>${esc(o.t)}${o.ad ? ` <span class="muted">· ${esc(o.ad)}</span>` : ""}${o.sb ? ` <span class="muted">· ${esc(o.sb)}</span>` : ""}</li>`).join("")}</ul>`;
+}
+const blockTitle = (it, date) => { const pl = planOn(it, date); return pl ? `${it.t}: ${pl.title}` : it.t; };
 async function loadSchedule(client) {
-  const [cur, sdp, top, staff] = await Promise.all([
+  const [cur, sdp, top, staff, pa, pb] = await Promise.all([
     getDoc(doc(db, "clients", client.id, "schedule", "current")),
     getDoc(doc(db, "clients", client.id, "schedule", "sdp")),
     getDoc(doc(db, "clients", client.id)),
-    getDocs(collection(db, "clients", client.id, "staff"))
+    getDocs(collection(db, "clients", client.id, "staff")),
+    getDoc(doc(db, "clients", client.id, "info", "plans-a")).catch(() => null),
+    getDoc(doc(db, "clients", client.id, "info", "plans-b")).catch(() => null)
   ]);
+  const fixEnd = (list) => list.map((it) => it.tasks && it.tasks.length ? { ...it, e: it.tasks.reduce((m, t) => (mins(t.e) > mins(m) ? t.e : m), it.e) } : it);
+  plans = {};
+  [pa, pb].forEach((x) => { if (x && x.exists()) { const v = x.data(); Object.entries(v.plans || {}).forEach(([k, p]) => (plans[k] = { ...p, opts: v.opts || [] })); } });
   sched = {
-    current: cur.exists() ? cur.data().items || [] : [],
-    sdp: sdp.exists() ? sdp.data().items || [] : [],
+    current: fixEnd(cur.exists() ? cur.data().items || [] : []),
+    sdp: fixEnd(sdp.exists() ? sdp.data().items || [] : []),
     switchDate: top.exists() ? top.data().switchDate || null : null,
     staff: staff.docs.map((d) => d.data())
   };
@@ -474,7 +494,7 @@ function drawStaffing(client) {
   $("page").innerHTML = `
     <div class="card now-card">
       <h2>On right now</h2>
-      ${now.length ? now.map((it) => `<div class="now-row"><div><b>${esc(it.t)}</b><div class="muted small">${timeRange(it)}</div></div>${whoChip(it)}</div>`).join("") : `<p class="muted">Nothing scheduled right now.</p>`}
+      ${now.length ? now.map((it) => `<div class="now-row"><div><b>${esc(blockTitle(it, new Date()))}</b><div class="muted small">${timeRange(it)}</div></div>${whoChip(it)}</div>`).join("") : `<p class="muted">Nothing scheduled right now.</p>`}
     </div>
     <div class="card">
       <h2>Who's working</h2>
@@ -482,7 +502,7 @@ function drawStaffing(client) {
       <p class="hint">${DAYS[day.getDay()]}, ${day.toLocaleDateString(undefined, { month: "long", day: "numeric" })} · ${plan === "sdp" ? "SDP plan" : "Current schedule"}${sw ? (plan === "sdp" ? ` (since ${swNice})` : ` (SDP plan starts ${swNice})`) : ""}</p>
       ${blocks.map((it) => `<div class="block-row${coverOf(it).kind === "gap" ? " is-gap" : ""}">
         <div class="block-time">${timeRange(it) || "Any time"}</div>
-        <div class="block-main"><div><b>${esc(it.t)}</b></div>${pickNote(it, day) ? `<div class="muted small">${esc(pickNote(it, day))}</div>` : ""}</div>
+        <div class="block-main"><div><b>${esc(blockTitle(it, day))}</b></div>${pickNote(it, day) ? `<div class="muted small">${esc(pickNote(it, day))}</div>` : ""}</div>
         ${whoChip(it)}</div>`).join("") || `<p class="muted">Nothing scheduled.</p>`}
     </div>
     <div class="card">
@@ -550,7 +570,7 @@ function drawSchedule(client) {
     ${days.map((d) => { const items = itemsOn(d);
       return `<div class="card day-card${dateKey(d) === today ? " is-today" : ""}"><h2>${DAYS[d.getDay()]} <span class="muted small">${fmt(d)}${dateKey(d) === today ? " · today" : ""}</span></h2>
         ${items.map((it) => `<div class="block-row${coverOf(it).kind === "gap" ? " is-gap" : ""}"><div class="block-time">${timeRange(it) || "Any time"}</div>
-          <div class="block-main"><b>${esc(it.t)}</b>${pickNote(it, d) ? `<div class="muted small">${esc(pickNote(it, d))}</div>` : ""}
+          <div class="block-main"><b>${esc(blockTitle(it, d))}</b>${pickNote(it, d) ? `<div class="muted small">${esc(pickNote(it, d))}</div>` : ""}${planHTML(planOn(it, d))}
           ${(it.tasks || []).length ? `<ul class="tasks">${it.tasks.map((t) => `<li><span class="muted">${fmtHM(t.s)}–${fmtHM(t.e)}</span> ${esc(t.t)}${t.sb ? ` <span class="muted">· ${esc(t.sb)}</span>` : ""}</li>`).join("")}</ul>` : ""}</div>
           ${whoChip(it)}</div>`).join("") || `<p class="muted">Nothing scheduled.</p>`}</div>`; }).join("")}`;
   $("page").querySelectorAll("[data-wk]").forEach((b) => (b.onclick = () => { schedWeek += +b.dataset.wk; drawSchedule(client); }));
@@ -707,6 +727,8 @@ async function importText(text) {
     (data.staff || []).forEach((s) => batch.set(doc(db, "clients", data.client, "staff", s.id), s));
     if (data.services) batch.set(doc(db, "clients", data.client, "info", "services"), { list: data.services });
     if (data.goals) batch.set(doc(db, "clients", data.client, "info", "goals"), data.goals);
+    if (data.plans) batch.set(doc(db, "clients", data.client, "info", "plans-a"), data.plans);
+    if (data.plans2) batch.set(doc(db, "clients", data.client, "info", "plans-b"), data.plans2);
     Object.entries(data.people || {}).forEach(([pid, v]) => batch.set(doc(db, "clients", data.client, "people", pid), v, { merge: true }));
     await batch.commit();
     const parts = [];
@@ -715,12 +737,13 @@ async function importText(text) {
     if (data.staff) parts.push(data.staff.length + " staff");
     if (data.services) parts.push("services");
     if (data.goals) parts.push("goals");
+    if (data.plans || data.plans2) parts.push("day program plans");
     if (data.people) parts.push("schedule");
     out.textContent = `Imported ${top.label}: ${parts.join(", ")}. ✓`;
     out.dataset.kind = "ok";
     await loadAccess(me.user);
     if (!me.clients.some((c) => c.id === data.client)) me.clients.push({ id: data.client, label: top.label });
-    location.hash = "#/c/" + data.client + "/" + (data.client === "SUP" ? (Object.keys(data.people || {})[0] || "") : data.todos ? "todo" : data.goals ? "goals" : "staffing");
+    location.hash = "#/c/" + data.client + "/" + (data.client === "SUP" ? (Object.keys(data.people || {})[0] || "") : data.todos ? "todo" : data.goals ? "goals" : (data.plans || data.plans2) ? "schedule" : "staffing");
     route();
     return true;
   } catch (err) {
