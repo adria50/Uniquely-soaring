@@ -1,4 +1,4 @@
-import { auth, db } from "./firebase.js?v=6";
+import { auth, db } from "./firebase.js?v=7";
 import {
   GoogleAuthProvider, signInWithPopup, signInWithEmailAndPassword,
   createUserWithEmailAndPassword, sendPasswordResetEmail, onAuthStateChanged, signOut
@@ -120,6 +120,7 @@ function renderClient(client, page) {
   if (page === "staffing") return renderStaffing(client);
   if (page === "schedule") return renderSchedule(client);
   if (page === "services") return renderServices(client);
+  if (page === "goals") return renderGoals(client);
   $("page").innerHTML = `<div class="card"><p class="muted">Coming soon. We're building this page next.</p></div>`;
 }
 
@@ -375,6 +376,89 @@ function drawSchedule(client) {
   $("grid-box").ontoggle = (e) => { if (e.target.open !== gridOpen) { gridOpen = e.target.open; drawSchedule(client); } };
 }
 
+// ---------------- Page 4: Goals & progress ----------------
+const LEVELS = [["own", "On his own"], ["help", "With help"], ["not", "Not today"]];
+let goals = null, logs = [], draft = { date: null, ratings: {}, note: "" }, openSkill = null, logsOpen = false;
+async function renderGoals(client) {
+  $("page").innerHTML = `<p class="muted">Loading…</p>`;
+  try { const g = await getDoc(doc(db, "clients", client.id, "info", "goals")); goals = g.exists() ? g.data() : null; }
+  catch (e) { $("page").innerHTML = `<div class="card"><p class="error">Couldn't load goals. Check your connection.</p></div>`; return; }
+  if (!goals) { $("page").innerHTML = `<div class="card"><p class="muted">No goals added yet.</p></div>`; return; }
+  draft = { date: dateKey(new Date()), ratings: {}, note: "" }; openSkill = null;
+  unsub = onSnapshot(collection(db, "clients", client.id, "logs"), (snap) => {
+    logs = snap.docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => (b.date || "").localeCompare(a.date || "") || (b.at || 0) - (a.at || 0));
+    drawGoals(client);
+  }, () => { logs = []; drawGoals(client); });
+}
+const allSkills = () => (goals.groups || []).flatMap((g) => g.items);
+function trendFor(id) {
+  const r = logs.filter((l) => l.ratings && l.ratings[id]).map((l) => ({ v: l.ratings[id], date: l.date })); // newest first
+  const score = (v) => (v === "own" ? 2 : v === "help" ? 1 : 0);
+  const last4 = r.slice(0, 4), prev4 = r.slice(4, 8);
+  const avg = (a) => a.reduce((s, x) => s + score(x.v), 0) / (a.length || 1);
+  let trend = "";
+  if (last4.length && prev4.length) { const d = avg(last4) - avg(prev4); trend = d > 0.25 ? "up" : d < -0.25 ? "down" : "same"; }
+  return { recent: r.slice(0, 8).reverse(), last: r[0], trend, count: r.length };
+}
+function drawGoals(client) {
+  const skills = allSkills();
+  const picked = Object.keys(draft.ratings).length;
+  const nameOf = (id) => (skills.find((s) => s.id === id) || {}).t || id;
+  const work = goals.work || {};
+  $("page").innerHTML = `
+    <div class="card focus-card">
+      <h2>Focus</h2><p>${esc(goals.focus || "")}</p>
+      ${work.goal ? `<h3>Work goal</h3><p>${esc(work.goal)}</p>${(work.places || []).length ? `<p class="muted small">Places to look: ${esc(work.places.join(" · "))}</p>` : ""}` : ""}
+    </div>
+    <div class="card">
+      <h2>Log a shift</h2>
+      <p class="hint">Tap each skill you worked on, then choose how it went.</p>
+      <label class="due-label">Date <input id="log-date" type="date" value="${esc(draft.date)}"></label>
+      <div class="skill-pick">
+        ${skills.map((s) => { const v = draft.ratings[s.id];
+          return `<div class="skill-item${v ? " rated" : ""}">
+            <button class="skill-name" data-open="${s.id}">${esc(s.t)}${v ? `<span class="lvl ${v}">${LEVELS.find((l) => l[0] === v)[1]}</span>` : ""}</button>
+            ${openSkill === s.id ? `<div class="lvl-row">${LEVELS.map(([k, l]) => `<button class="lvl-btn ${k}" aria-pressed="${v === k}" data-rate="${s.id}" data-lvl="${k}">${l}</button>`).join("")}${v ? `<button class="link" data-clear="${s.id}">Clear</button>` : ""}</div>` : ""}
+          </div>`; }).join("")}
+      </div>
+      <label for="log-note">Note (optional)</label>
+      <textarea id="log-note" rows="3" placeholder="How did the shift go?">${esc(draft.note)}</textarea>
+      <button id="log-save" class="btn primary" ${picked ? "" : "disabled"}>Save${picked ? ` (${picked} skill${picked > 1 ? "s" : ""})` : ""}</button>
+      <div id="log-msg" class="small" role="status"></div>
+    </div>
+    <div class="card">
+      <h2>Progress</h2>
+      <p class="hint">Last 8 times each skill was logged. <span class="dot own"></span> on his own <span class="dot help"></span> with help <span class="dot not"></span> not today</p>
+      ${skills.map((s) => { const t = trendFor(s.id);
+        return `<div class="prog-row"><div class="prog-name">${esc(s.t)}${t.last ? `<div class="muted small">Last: ${esc(t.last.date)}</div>` : ""}</div>
+          <div class="prog-dots">${t.recent.map((x) => `<span class="dot ${x.v}" title="${esc(x.date)}"></span>`).join("") || `<span class="muted small">Not logged yet</span>`}</div>
+          <div class="prog-trend">${t.trend === "up" ? "↑ Growing" : t.trend === "down" ? "↓ Slipping" : t.trend === "same" ? "→ Steady" : ""}</div></div>`; }).join("")}
+    </div>
+    <div class="card">
+      <details ${logsOpen ? "open" : ""} id="logs-box"><summary><h2>Shift notes <span class="count">${logs.length}</span></h2></summary>
+      ${logs.map((l) => `<div class="log-row"><div class="log-head"><b>${esc(l.date)}</b> <span class="muted small">· ${esc(l.byName || l.by || "")}</span>${me.admin ? `<button class="link del" data-del="${esc(l.id)}">Delete</button>` : ""}</div>
+        <div class="small">${Object.entries(l.ratings || {}).map(([k, v]) => `<span class="lvl ${v}">${esc(nameOf(k))}: ${LEVELS.find((x) => x[0] === v)?.[1] || v}</span>`).join(" ")}</div>
+        ${l.note ? `<p class="small">${esc(l.note)}</p>` : ""}</div>`).join("") || `<p class="muted">No shift notes yet.</p>`}</details>
+    </div>`;
+  const P = $("page");
+  $("log-date").onchange = (e) => (draft.date = e.target.value);
+  $("log-note").oninput = (e) => (draft.note = e.target.value);
+  P.querySelectorAll("[data-open]").forEach((b) => (b.onclick = () => { openSkill = openSkill === b.dataset.open ? null : b.dataset.open; drawGoals(client); }));
+  P.querySelectorAll("[data-rate]").forEach((b) => (b.onclick = () => { draft.ratings[b.dataset.rate] = b.dataset.lvl; openSkill = null; drawGoals(client); }));
+  P.querySelectorAll("[data-clear]").forEach((b) => (b.onclick = () => { delete draft.ratings[b.dataset.clear]; drawGoals(client); }));
+  P.querySelectorAll("[data-del]").forEach((b) => (b.onclick = async () => { if (confirm("Delete this shift note?")) await deleteDoc(doc(db, "clients", client.id, "logs", b.dataset.del)); }));
+  $("logs-box").ontoggle = (e) => (logsOpen = e.target.open);
+  $("log-save").onclick = async () => {
+    if (!Object.keys(draft.ratings).length) return;
+    $("log-save").disabled = true;
+    try {
+      const id = "l" + Date.now().toString(36);
+      await setDoc(doc(db, "clients", client.id, "logs", id), { date: draft.date || dateKey(new Date()), ratings: draft.ratings, note: draft.note.trim(), by: me.user.email, byName: me.user.displayName || me.user.email, at: Date.now() });
+      draft = { date: dateKey(new Date()), ratings: {}, note: "" };
+    } catch (e) { $("log-msg").textContent = "Didn't save. Check your connection and try again."; $("log-msg").className = "small error"; $("log-save").disabled = false; }
+  };
+}
+
 // ---------------- Page 5: Services ----------------
 async function renderServices(client) {
   $("page").innerHTML = `<p class="muted">Loading…</p>`;
@@ -435,17 +519,19 @@ async function importText(text) {
     Object.entries(data.schedules || {}).forEach(([k, items]) => batch.set(doc(db, "clients", data.client, "schedule", k), { items }));
     (data.staff || []).forEach((s) => batch.set(doc(db, "clients", data.client, "staff", s.id), s));
     if (data.services) batch.set(doc(db, "clients", data.client, "info", "services"), { list: data.services });
+    if (data.goals) batch.set(doc(db, "clients", data.client, "info", "goals"), data.goals);
     await batch.commit();
     const parts = [];
     if (data.todos) parts.push(data.todos.length + " to-dos");
     if (data.schedules) parts.push("schedule");
     if (data.staff) parts.push(data.staff.length + " staff");
     if (data.services) parts.push("services");
+    if (data.goals) parts.push("goals");
     out.textContent = `Imported ${top.label}: ${parts.join(", ")}. ✓`;
     out.dataset.kind = "ok";
     await loadAccess(me.user);
     if (!me.clients.some((c) => c.id === data.client)) me.clients.push({ id: data.client, label: top.label });
-    location.hash = "#/c/" + data.client + "/" + (data.todos ? "todo" : "staffing");
+    location.hash = "#/c/" + data.client + "/" + (data.todos ? "todo" : data.goals ? "goals" : "staffing");
     route();
     return true;
   } catch (err) {
