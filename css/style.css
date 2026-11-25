@@ -146,3 +146,31 @@ textarea { width: 100%; padding: 10px 14px; font: inherit; font-size: .9rem; col
 .staff-row > div:first-child { flex: 1; }
 .staff-hours { flex: 1.3; }
 @media (max-width: 520px) { .block-row { flex-wrap: wrap; } .block-time { width: 100%; } .staff-row { flex-direction: column; } .who { max-width: 60%; } }
+
+/* Schedule */
+.week-nav { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+.week-nav h2 { margin: 0; font-size: 1.1rem; text-align: center; }
+.week-nav .day { min-width: 44px; font-size: 1.2rem; }
+.grid-box { margin-top: 6px; border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; background: #fbfcfe; }
+.grid-box summary { display: flex; justify-content: space-between; align-items: center; font-weight: 700; }
+.grid-wrap { display: flex; overflow-x: auto; margin-top: 12px; }
+.g-hours { flex: none; width: 30px; }
+.g-col { flex: 1; min-width: 76px; border-left: 1px solid var(--line); }
+.g-head { height: 34px; text-align: center; font-weight: 700; font-size: .85rem; line-height: 1.1; }
+.g-head small { display: block; font-weight: 500; color: var(--muted); }
+.g-body { position: relative; }
+.g-line { position: absolute; left: 0; right: -800px; border-top: 1px dashed #e8ecf3; }
+.g-hr { position: absolute; left: 0; font-size: .68rem; color: var(--muted); transform: translateY(-50%); }
+.g-block { position: absolute; left: 2px; right: 2px; border-radius: 6px; padding: 2px 4px; overflow: hidden; font-size: .7rem; line-height: 1.15; }
+.g-block b { display: block; font-weight: 700; }
+.g-block span { display: block; opacity: .85; }
+.g-block.staff { background: #ece3ff; color: #5b34a8; }
+.g-block.you { background: #dbe8fd; color: var(--sky-dark); }
+.g-block.program { background: #ffead0; color: #a0570c; }
+.g-block.gap { background: repeating-linear-gradient(45deg, #fbe0dc 0 6px, #f8d2cc 6px 12px); color: var(--error); }
+.legend { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.legend .who { max-width: none; }
+.day-card.is-today { border-left: 5px solid var(--sky); }
+.day-card h2 { gap: 10px; }
+.tasks { margin: 6px 0 0; padding-left: 18px; font-size: .88rem; }
+.tasks li { margin: 2px 0; }

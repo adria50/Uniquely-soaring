@@ -1,4 +1,4 @@
-import { auth, db } from "./firebase.js?v=4";
+import { auth, db } from "./firebase.js?v=5";
 import {
   GoogleAuthProvider, signInWithPopup, signInWithEmailAndPassword,
   createUserWithEmailAndPassword, sendPasswordResetEmail, onAuthStateChanged, signOut
@@ -118,6 +118,7 @@ function renderClient(client, page) {
   show("client");
   if (page === "todo") return renderTodo(client);
   if (page === "staffing") return renderStaffing(client);
+  if (page === "schedule") return renderSchedule(client);
   $("page").innerHTML = `<div class="card"><p class="muted">Coming soon. We're building this page next.</p></div>`;
 }
 
@@ -311,6 +312,66 @@ function drawStaffing(client) {
       <p class="hint" style="margin-top:12px">Rules: no one works more than 8 hours a day, 40 hours a week, or 7 days in a row.</p>
     </div>`;
   $("page").querySelectorAll("[data-day]").forEach((b) => (b.onclick = () => { staffDay = +b.dataset.day; drawStaffing(client); }));
+}
+
+// ---------------- Page 3: Schedule ----------------
+let schedWeek = 0, schedPlan = "auto", gridOpen = false;
+function weekStart(offset) { const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - ((d.getDay() + 6) % 7) + offset * 7); return d; }
+function itemsOn(date) {
+  if (schedPlan === "auto") return blocksFor(date);
+  const list = sched[schedPlan] || [];
+  return list.filter((it) => applies(it, date)).sort((a, b) => (a.s ? mins(a.s) : -1) - (b.s ? mins(b.s) : -1));
+}
+async function renderSchedule(client) {
+  $("page").innerHTML = `<p class="muted">Loading…</p>`;
+  try { await loadSchedule(client); } catch (e) { $("page").innerHTML = `<div class="card"><p class="error">Couldn't load the schedule. Check your connection.</p></div>`; return; }
+  drawSchedule(client);
+}
+function gridHTML(days) {
+  const H = 22; // px per hour
+  const hours = Array.from({ length: 25 }, (_, h) => `<div class="g-line" style="top:${h * H}px"></div>${h < 24 ? `<div class="g-hr" style="top:${h * H}px">${(h % 12) || 12}${h < 12 ? "a" : "p"}</div>` : ""}`).join("");
+  const cols = days.map((d, i) => {
+    const pieces = [];
+    itemsOn(d).forEach((it) => {
+      if (!it.s) return;
+      const s = mins(it.s), e = it.e === "24:00" ? 1440 : mins(it.e);
+      if (e > s) pieces.push([s, e, it]); else { pieces.push([s, 1440, it]); }
+    });
+    // overnight blocks from the day before that run past midnight
+    const prev = new Date(d); prev.setDate(prev.getDate() - 1);
+    itemsOn(prev).forEach((it) => { if (it.s && it.e !== "24:00" && mins(it.e) <= mins(it.s) && mins(it.e) > 0) pieces.push([0, mins(it.e), it]); });
+    const bl = pieces.map(([s, e, it]) => { const k = coverOf(it).kind;
+      return `<div class="g-block ${k}" style="top:${s / 60 * H}px;height:${Math.max(14, (e - s) / 60 * H - 2)}px" title="${esc(it.t)} · ${esc(coverOf(it).who)}"><b>${esc(it.t)}</b>${(e - s) >= 90 ? `<span>${esc(coverOf(it).who)}</span>` : ""}</div>`; }).join("");
+    return `<div class="g-col"><div class="g-head">${DAYS[d.getDay()].slice(0, 3)}<small>${d.getMonth() + 1}/${d.getDate()}</small></div><div class="g-body" style="height:${24 * H}px">${bl}</div></div>`;
+  }).join("");
+  return `<div class="grid-wrap"><div class="g-hours"><div class="g-head"></div><div class="g-body" style="height:${24 * H}px">${hours}</div></div>${cols}</div>
+    <div class="legend"><span class="who staff">Staff</span><span class="who you">Adria</span><span class="who prog">Program</span><span class="who gap">Not covered</span></div>`;
+}
+function drawSchedule(client) {
+  if (!sched.current.length && !sched.sdp.length) { $("page").innerHTML = `<div class="card"><p class="muted">No schedule yet.</p></div>`; return; }
+  const ws = weekStart(schedWeek);
+  const days = Array.from({ length: 7 }, (_, i) => { const d = new Date(ws); d.setDate(d.getDate() + i); return d; });
+  const fmt = (d) => d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  const sw = sched.switchDate ? new Date(sched.switchDate + "T00:00").toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" }) : "";
+  const planBtns = [["auto", "By date"], ["current", "Current"], ["sdp", "SDP plan"]].filter(([k]) => k !== "sdp" || sched.sdp.length)
+    .map(([k, l]) => `<button class="day" aria-pressed="${schedPlan === k}" data-plan="${k}">${l}</button>`).join("");
+  const today = dateKey(new Date());
+  $("page").innerHTML = `
+    <div class="card">
+      <div class="week-nav"><button class="day" data-wk="-1" aria-label="Previous week">‹</button><h2>${fmt(days[0])} – ${fmt(days[6])}</h2><button class="day" data-wk="1" aria-label="Next week">›</button></div>
+      <div class="days">${planBtns}</div>
+      <p class="hint">${schedPlan === "auto" ? (sw ? `Current schedule until ${sw}, then the SDP plan.` : "Current schedule.") : schedPlan === "sdp" ? "Showing the SDP plan for every day." : "Showing the current schedule for every day."}</p>
+      <details class="grid-box" ${gridOpen ? "open" : ""} id="grid-box"><summary><span>📅 Week grid</span><span class="muted small">tap to ${gridOpen ? "close" : "open"}</span></summary>${gridOpen ? gridHTML(days) : ""}</details>
+    </div>
+    ${days.map((d) => { const items = itemsOn(d);
+      return `<div class="card day-card${dateKey(d) === today ? " is-today" : ""}"><h2>${DAYS[d.getDay()]} <span class="muted small">${fmt(d)}${dateKey(d) === today ? " · today" : ""}</span></h2>
+        ${items.map((it) => `<div class="block-row${coverOf(it).kind === "gap" ? " is-gap" : ""}"><div class="block-time">${timeRange(it) || "Any time"}</div>
+          <div class="block-main"><b>${esc(it.t)}</b>${pickNote(it, d) ? `<div class="muted small">${esc(pickNote(it, d))}</div>` : ""}
+          ${(it.tasks || []).length ? `<ul class="tasks">${it.tasks.map((t) => `<li><span class="muted">${fmtHM(t.s)}–${fmtHM(t.e)}</span> ${esc(t.t)}${t.sb ? ` <span class="muted">· ${esc(t.sb)}</span>` : ""}</li>`).join("")}</ul>` : ""}</div>
+          ${whoChip(it)}</div>`).join("") || `<p class="muted">Nothing scheduled.</p>`}</div>`; }).join("")}`;
+  $("page").querySelectorAll("[data-wk]").forEach((b) => (b.onclick = () => { schedWeek += +b.dataset.wk; drawSchedule(client); }));
+  $("page").querySelectorAll("[data-plan]").forEach((b) => (b.onclick = () => { schedPlan = b.dataset.plan; drawSchedule(client); }));
+  $("grid-box").ontoggle = (e) => { if (e.target.open !== gridOpen) { gridOpen = e.target.open; drawSchedule(client); } };
 }
 
 // ---------------- Import (Adria only) ----------------
