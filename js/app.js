@@ -1,4 +1,4 @@
-import { auth, db } from "./firebase.js?v=15";
+import { auth, db } from "./firebase.js?v=16";
 import {
   GoogleAuthProvider, signInWithPopup, signInWithEmailAndPassword,
   createUserWithEmailAndPassword, sendPasswordResetEmail, onAuthStateChanged, signOut, sendEmailVerification
@@ -183,7 +183,78 @@ const SUP_TABS = [
   { id: "dlipscomb", name: "DLipscomb", supervises: "EzW" },
   { id: "third", name: "TSupervisor", supervises: "EdW" }
 ];
-let supWeek = 0;
+let supWeek = 0, supEdit = null, supForm = null; // supForm: null, or {i: index or -1}
+const DAY_ORDER = [1, 2, 3, 4, 5, 6, 0];
+const wkText = (w) => !w || w.length === 5 ? "every week" : "week " + w.join(", ");
+// Hours per day for each week of the month, to catch days over 8 hours
+function overLimits(all) {
+  const out = [];
+  for (let w = 1; w <= 5; w++) DAY_ORDER.forEach((d) => {
+    const m = all.filter((it) => (it.d || []).includes(d) && (!it.w || it.w.includes(w))).reduce((t, it) => t + mins(it.e) - mins(it.s), 0);
+    if (m > 480) out.push(`${DAYS[d]} in week ${w}: ${Math.round(m / 6) / 10} hrs`);
+  });
+  return out;
+}
+function drawSupEditor(client, tab, all, flex) {
+  const box = $("sup-sched");
+  const sorted = all.map((it, i) => ({ it, i })).sort((a, b) => DAY_ORDER.indexOf(a.it.d[0]) - DAY_ORDER.indexOf(b.it.d[0]) || mins(a.it.s) - mins(b.it.s));
+  const f = supForm ? (supForm.i >= 0 ? all[supForm.i] : { d: [], w: [1, 2, 3, 4, 5], s: "09:00", e: "10:00", t: "", sb: "" }) : null;
+  const warn = overLimits(all);
+  box.innerHTML = `
+    <p class="hint">Changes save for everyone right away.</p>
+    ${warn.length ? `<div class="notice small"><b>Over 8 hours:</b> ${esc(warn.join(" · "))}</div>` : ""}
+    ${f ? `<form id="sup-form" class="edit-form">
+        <h3>${supForm.i >= 0 ? "Change this block" : "Add a block"}</h3>
+        <label for="sf-t">What</label><input id="sf-t" required value="${esc(f.t)}" placeholder="Observe morning PA">
+        <label for="sf-sb">Notes (optional)</label><input id="sf-sb" value="${esc(f.sb || "")}">
+        <label>Day</label><div class="checks">${DAY_ORDER.map((d) => `<label class="pick"><input type="checkbox" name="sf-d" value="${d}" ${(f.d || []).includes(d) ? "checked" : ""}> ${DAYS[d].slice(0, 3)}</label>`).join("")}</div>
+        <div class="add-row"><label class="due-label">From <input id="sf-s" type="time" value="${esc(f.s)}" required></label><label class="due-label">To <input id="sf-e" type="time" value="${esc(f.e)}" required></label></div>
+        <label>Which weeks of the month</label><div class="checks">${[1, 2, 3, 4, 5].map((w) => `<label class="pick"><input type="checkbox" name="sf-w" value="${w}" ${!f.w || f.w.includes(w) ? "checked" : ""}> Week ${w}</label>`).join("")}</div>
+        <div class="add-row"><button class="btn" type="button" id="sf-cancel">Cancel</button><button class="btn primary" type="submit">Save</button></div>
+        <div id="sf-msg" class="small error" role="status"></div>
+      </form>` : `<button class="btn primary" id="sup-add" type="button">+ Add a block</button>`}
+    <div class="edit-list">${sorted.map(({ it, i }) => `<div class="block-row"><div class="block-main"><b>${esc(it.t)}</b>
+        <div class="muted small">${(it.d || []).map((d) => DAYS[d].slice(0, 3)).join(", ")} · ${fmtHM(it.s)}–${fmtHM(it.e)} · ${wkText(it.w)}</div></div>
+        <button class="link" data-edit="${i}">Change</button><button class="link del" data-delb="${i}">Delete</button></div>`).join("") || `<p class="muted">No blocks yet.</p>`}</div>
+    <form id="flex-form" class="edit-form">
+      <h3>Hours they schedule themselves</h3>
+      <div class="add-row"><label class="due-label">Hours a week <input id="fx-h" type="number" min="0" max="6" step="0.5" value="${esc(flex ? flex.hours : 0)}"></label></div>
+      <label for="fx-sb">What they're for</label><input id="fx-sb" value="${esc(flex ? flex.sb || "" : "")}" placeholder="School observation, meetings…">
+      <button class="btn" type="submit">Save hours</button><div id="fx-msg" class="small" role="status"></div>
+    </form>
+    <button class="btn primary" id="sup-done" type="button">Done editing</button>`;
+  const ref = doc(db, "clients", "SUP", "people", tab.id);
+  const redraw = () => renderSupTab(client, tab);
+  $("sup-done").onclick = () => { supEdit = null; supForm = null; stopLive(); redraw(); };
+  if ($("sup-add")) $("sup-add").onclick = () => { supForm = { i: -1 }; stopLive(); redraw(); };
+  box.querySelectorAll("[data-edit]").forEach((b) => (b.onclick = () => { supForm = { i: +b.dataset.edit }; stopLive(); redraw(); window.scrollTo({ top: box.offsetTop - 60, behavior: "smooth" }); }));
+  box.querySelectorAll("[data-delb]").forEach((b) => (b.onclick = async () => {
+    const it = all[+b.dataset.delb]; if (!confirm(`Delete "${it.t}"?`)) return;
+    await setDoc(ref, { schedule: all.filter((_, j) => j !== +b.dataset.delb) }, { merge: true }); supForm = null; stopLive(); redraw();
+  }));
+  if (f) {
+    $("sf-cancel").onclick = () => { supForm = null; stopLive(); redraw(); };
+    $("sup-form").onsubmit = async (e) => {
+      e.preventDefault();
+      const d = [...box.querySelectorAll('input[name="sf-d"]:checked')].map((x) => +x.value);
+      const w = [...box.querySelectorAll('input[name="sf-w"]:checked')].map((x) => +x.value);
+      const st = $("sf-s").value, en = $("sf-e").value;
+      if (!d.length) return ($("sf-msg").textContent = "Pick at least one day.");
+      if (!w.length) return ($("sf-msg").textContent = "Pick at least one week.");
+      if (mins(en) <= mins(st)) return ($("sf-msg").textContent = "The end time needs to be after the start time.");
+      const item = { d, w, s: st, e: en, t: $("sf-t").value.trim(), sb: $("sf-sb").value.trim() };
+      const next = all.slice(); if (supForm.i >= 0) next[supForm.i] = item; else next.push(item);
+      try { await setDoc(ref, { schedule: next }, { merge: true }); supForm = null; stopLive(); redraw(); }
+      catch (err) { $("sf-msg").textContent = "Didn't save. Check your connection."; }
+    };
+  }
+  $("flex-form").onsubmit = async (e) => {
+    e.preventDefault();
+    const h = Math.max(0, Math.min(6, +$("fx-h").value || 0));
+    try { await setDoc(ref, { flex: { hours: h, t: (flex && flex.t) || tab.name.replace(/^./, "") + " schedules", sb: $("fx-sb").value.trim() } }, { merge: true }); $("fx-msg").textContent = "Saved ✓"; $("fx-msg").className = "small ok"; }
+    catch (err) { $("fx-msg").textContent = "Didn't save."; $("fx-msg").className = "small error"; }
+  };
+}
 async function renderSupTab(client, tab) {
   $("page").innerHTML = `
     <div class="card"><h2>${esc(tab.name)}</h2>
@@ -201,6 +272,7 @@ async function renderSupTab(client, tab) {
     const sd = await getDoc(doc(db, "clients", "SUP", "people", tab.id));
     const all = (sd.exists() && sd.data().schedule) || [];
     const flex = (sd.exists() && sd.data().flex) || null; // hours they schedule themselves
+    if (supEdit === tab.id) return drawSupEditor(client, tab, all, flex);
     const rotates = all.some((it) => it.w);
     if (!supWeek) supWeek = Math.min(5, Math.ceil(new Date().getDate() / 7));
     const items = all.filter((it) => !it.w || it.w.includes(supWeek));
@@ -213,6 +285,8 @@ async function renderSupTab(client, tab) {
     const flexRow = flex ? `<div class="block-row flex-row"><div class="block-time">${flexH} hrs</div><div class="block-main"><b>${esc(flex.t || "Flexible")}</b>${flex.sb ? `<div class="muted small">${esc(flex.sb)}</div>` : ""}</div></div>` : "";
     $("sup-sched").innerHTML = weekBtns + (sumTxt ? `<p class="hint">${sumTxt}</p>` : "") + flexRow + (byDay.length ? byDay.map(([d, l]) => `<div class="block-row"><div class="block-time">${DAYS[d]}</div><div class="block-main">${l.map((it) => `<div><b>${fmtHM(it.s)}–${fmtHM(it.e)}</b> ${esc(it.t || "")}${it.sb ? `<div class="muted small">${esc(it.sb)}</div>` : ""}</div>`).join("")}</div></div>`).join("")
       : `<p class="muted">No hours set yet.</p>`);
+    $("sup-sched").insertAdjacentHTML("beforeend", `<button class="btn" id="sup-edit" type="button" style="margin-top:14px">✏️ Edit schedule</button>`);
+    $("sup-edit").onclick = () => { supEdit = tab.id; supForm = null; stopLive(); renderSupTab(client, tab); };
     $("sup-sched").querySelectorAll("[data-supwk]").forEach((b) => (b.onclick = () => { supWeek = +b.dataset.supwk; stopLive(); renderSupTab(client, tab); }));
   } catch (e) { $("sup-sched").innerHTML = `<p class="error small">Couldn't load the schedule.</p>`; }
 }
