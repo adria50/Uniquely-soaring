@@ -1,4 +1,4 @@
-import { auth, db } from "./firebase.js?v=20";
+import { auth, db } from "./firebase.js?v=21";
 import {
   GoogleAuthProvider, signInWithPopup, signInWithEmailAndPassword,
   createUserWithEmailAndPassword, sendPasswordResetEmail, onAuthStateChanged, signOut, sendEmailVerification
@@ -167,7 +167,7 @@ function renderHome() {
 function renderClient(client, page) {
   $("client-title").textContent = client.label;
   $("back-home").hidden = !me.admin && me.clients.length === 1;
-  const pages = client.id === "SUP" ? SUP_TABS.map((t) => [t.id, t.name]) : PAGES;
+  const pages = client.id === "SUP" ? SUP_TABS.map((t) => [t.id, t.name]) : client.id === "EzW" ? PAGES.slice(0, 4).concat([["iep", "IEP"]], PAGES.slice(4)) : PAGES;
   if (!pages.some(([k]) => k === page)) page = pages[0][0];
   $("page-tabs").innerHTML = pages.map(([k, l]) =>
     `<a href="#/c/${esc(client.id)}/${k}" class="tab" aria-current="${k === page}">${l}</a>`).join("");
@@ -178,6 +178,7 @@ function renderClient(client, page) {
   if (page === "schedule") return renderSchedule(client);
   if (page === "services") return renderServices(client);
   if (page === "goals") return renderGoals(client);
+  if (page === "iep") return renderIEP(client);
   $("page").innerHTML = `<div class="card"><p class="muted">Coming soon. We're building this page next.</p></div>`;
 }
 
@@ -419,7 +420,7 @@ function coverOf(it) {
   return { who: it.t, kind: "program" };
 }
 
-let sched = { current: [], sdp: [], switchDate: null, staff: [] }, plans = {};
+let sched = { current: [], sdp: [], switchDate: null, staff: [] }, plans = {}, upcoming = [];
 // What a "Day Program" block holds on a given date (from the day program plans)
 const PLAN_DAY = { 2: "tue", 3: "wed", 4: "thu", 5: "fri" };
 function planOn(it, date) {
@@ -436,14 +437,16 @@ function planHTML(pl) {
 }
 const blockTitle = (it, date) => { const pl = planOn(it, date); return pl ? `${it.t}: ${pl.title}` : it.t; };
 async function loadSchedule(client) {
-  const [cur, sdp, top, staff, pa, pb] = await Promise.all([
+  const [cur, sdp, top, staff, pa, pb, up] = await Promise.all([
     getDoc(doc(db, "clients", client.id, "schedule", "current")),
     getDoc(doc(db, "clients", client.id, "schedule", "sdp")),
     getDoc(doc(db, "clients", client.id)),
     getDocs(collection(db, "clients", client.id, "staff")),
     getDoc(doc(db, "clients", client.id, "info", "plans-a")).catch(() => null),
-    getDoc(doc(db, "clients", client.id, "info", "plans-b")).catch(() => null)
+    getDoc(doc(db, "clients", client.id, "info", "plans-b")).catch(() => null),
+    getDoc(doc(db, "clients", client.id, "info", "upcoming")).catch(() => null)
   ]);
+  upcoming = (up && up.exists() && up.data().list) || [];
   const fixEnd = (list) => list.map((it) => it.tasks && it.tasks.length ? { ...it, e: it.tasks.reduce((m, t) => (mins(t.e) > mins(m) ? t.e : m), it.e) } : it);
   plans = {};
   [pa, pb].forEach((x) => { if (x && x.exists()) { const v = x.data(); Object.entries(v.plans || {}).forEach(([k, p]) => (plans[k] = { ...p, opts: v.opts || [] })); } });
@@ -518,7 +521,7 @@ function drawStaffing(client) {
         ${s.offTime ? `<div class="small"><span class="muted">Off:</span> ${esc(s.offTime)}</div>` : ""}</div></div>`).join("") || `<p class="muted">No staff added yet.</p>`}
       <p class="hint" style="margin-top:12px">Rules: no one works more than 8 hours a day, 40 hours a week, or 7 days in a row.</p>
     </div>`;
-  $("page").insertAdjacentHTML("beforeend", editBtn("ed-staff", "Edit staff"));
+  $("page").insertAdjacentHTML("beforeend", hoursCheck() + editBtn("ed-staff", "Edit staff"));
   $("ed-staff").onclick = () => { edStaff = null; staffEditor(client); };
   $("page").querySelectorAll("[data-day]").forEach((b) => (b.onclick = () => { staffDay = +b.dataset.day; drawStaffing(client); }));
 }
@@ -578,6 +581,8 @@ function drawSchedule(client) {
           <div class="block-main"><b>${esc(blockTitle(it, d))}</b>${pickNote(it, d) ? `<div class="muted small">${esc(pickNote(it, d))}</div>` : ""}${planHTML(planOn(it, d))}
           ${(it.tasks || []).length ? `<ul class="tasks">${it.tasks.map((t) => `<li><span class="muted">${fmtHM(t.s)}–${fmtHM(t.e)}</span> ${esc(t.t)}${t.sb ? ` <span class="muted">· ${esc(t.sb)}</span>` : ""}</li>`).join("")}</ul>` : ""}</div>
           ${whoChip(it)}</div>`).join("") || `<p class="muted">Nothing scheduled.</p>`}</div>`; }).join("")}`;
+  const soon = upcoming.filter((u) => u.date >= dateKey(new Date())).slice(0, 6);
+  if (soon.length) $("page").insertAdjacentHTML("afterbegin", `<div class="card"><h2>Coming up</h2>${soon.map((u) => `<div class="block-row"><div class="block-time">${esc(niceDate(u.date))}</div><div class="block-main">${esc(u.t)}</div></div>`).join("")}</div>`);
   $("page").insertAdjacentHTML("afterbegin", editBtn("ed-sched", "Edit schedule"));
   $("ed-sched").onclick = () => { edPlan = schedPlan === "auto" ? null : schedPlan; edItem = null; scheduleEditor(client); };
   $("page").querySelectorAll("[data-wk]").forEach((b) => (b.onclick = () => { schedWeek += +b.dataset.wk; drawSchedule(client); }));
@@ -908,6 +913,89 @@ async function servicesEditor(client) {
   }
 }
 
+
+// =====================================================================
+// IEP tracker (EzW): school data entered by the supervisor
+// 4 of 5 days at the checkpoint target = mastered. One miss keeps the count; a second miss starts over.
+// =====================================================================
+const IEP_ROLES = { teacher: "Teacher", at: "Assistive technology", slpa: "Speech (SLPA)", slp: "Speech-language pathologist (SLP)", ot: "Occupational therapist (OT)", cota: "COTA", pt: "Physical therapist (PT)", ape: "Adaptive PE", bcba: "BCBA", bid: "Behavior (BID)" };
+let iepInfo = null, iepData = {}, iepWeek = 0, iepOpenG = {};
+const iepPct = (v) => { const s = String(v || "").trim(); let m = s.match(/^(\d+)\s*\/\s*(\d+)$/); if (m && +m[2]) return Math.round(+m[1] / +m[2] * 100); m = s.match(/^(\d+(?:\.\d+)?)\s*%?$/); return m ? Math.round(+m[1]) : null; };
+function iepCur(g) { const st = (g.steps || []).slice().sort((a, b) => (a.by < b.by ? -1 : 1)); if (!st.length) return null; const t = todayKey(); return st.find((x) => x.by >= t) || st[st.length - 1]; }
+const iepTarget = (g) => { const c = iepCur(g); return (c && c.pct) || 80; };
+function iepStat(g) {
+  const d = iepData[g.id] || {}; let hits = 0, miss = 0;
+  for (const k of Object.keys(d).sort()) { const p = iepPct(d[k]); if (p == null) continue; if (p >= iepTarget(g)) hits++; else { miss++; if (miss >= 2) { hits = 0; miss = 0; } } if (hits >= 4) return { hits: 4, star: true }; }
+  return { hits, star: false };
+}
+const niceDate = (k) => { const [y, m, d] = String(k).split("-").map(Number); return new Date(y, m - 1, d).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }); };
+async function renderIEP(client) {
+  $("page").innerHTML = `<p class="muted">Loading…</p>`;
+  try { const s = await getDoc(doc(db, "clients", client.id, "info", "iep")); iepInfo = s.exists() ? s.data() : null; }
+  catch (e) { $("page").innerHTML = `<div class="card"><p class="error">Couldn't load the IEP. Check your connection.</p></div>`; return; }
+  if (!iepInfo || !(iepInfo.goals || []).length) { $("page").innerHTML = `<div class="card"><p class="muted">No IEP goals yet.</p></div>`; return; }
+  unsub = onSnapshot(collection(db, "clients", client.id, "iepdata"), (snap) => { iepData = {}; snap.docs.forEach((d) => (iepData[d.id] = d.data().days || {})); drawIEP(client); }, () => drawIEP(client));
+}
+function drawIEP(client) {
+  const goals = iepInfo.goals || [], team = iepInfo.team || {};
+  const mon = new Date(); mon.setHours(0, 0, 0, 0); mon.setDate(mon.getDate() - ((mon.getDay() + 6) % 7) + 7 * iepWeek);
+  const days = [0, 1, 2, 3, 4].map((o) => { const d = new Date(mon); d.setDate(d.getDate() + o); return d; });
+  const mastered = goals.filter((g) => iepStat(g).star).length;
+  const mail = (g) => { const em = (g.roles || []).map((r) => team[r] && team[r].email).filter(Boolean); if (!em.length) return ""; const c = iepCur(g);
+    const body = `Hi everyone,\n\nGood news: Ezriel met his checkpoint for ${g.label}${c && c.pct ? " (" + c.pct + "%" + (c.by ? " by " + niceDate(c.by) : "") + ")" : ""}, 4 of 5 days. Thank you for all your work with him!\n`;
+    return `mailto:${em.join(",")}?subject=${encodeURIComponent("Ezriel met a goal: " + g.label)}&body=${encodeURIComponent(body)}`; };
+  $("page").innerHTML = `
+    <div class="card"><h2>IEP goals <span class="count">${mastered} of ${goals.length} met</span></h2>
+      <p class="hint">Type the school's number for each day, like 3/5 or 60. A day counts when it reaches the checkpoint. 4 of 5 days = met ★</p>
+      <div class="week-nav"><button class="day" data-iw="-1" aria-label="Previous week">‹</button><h2>Week of ${days[0].toLocaleDateString(undefined, { month: "short", day: "numeric" })}</h2><button class="day" data-iw="1" aria-label="Next week">›</button></div></div>
+    ${goals.map((g) => { const st = iepStat(g), c = iepCur(g), T = iepTarget(g), dd = iepData[g.id] || {};
+      return `<div class="card iep-card">
+        <div class="svc-top"><h2 style="font-size:1.05rem">${esc(g.label)}</h2>${st.star ? `<span class="who staff">★ Met</span>` : `<span class="who you">${st.hits} of 4 days</span>`}</div>
+        <p class="small" style="margin:0 0 6px">${esc(g.goal)}</p>
+        ${c ? `<p class="small muted" style="margin:0 0 10px"><b>Now:</b> ${c.pct ? c.pct + "%" : ""} by ${esc(niceDate(c.by))}${c.cues ? " · " + esc(c.cues) : ""}${c.note ? " · " + esc(c.note) : ""}</p>` : ""}
+        <div class="iep-days">${days.map((d) => { const k = dateKey(d), v = dd[k] || "", p = iepPct(v);
+          return `<label><span>${DAYS[d.getDay()].slice(0, 3)} ${d.getDate()}</span><input data-iepv="${esc(g.id)}|${k}" value="${esc(v)}" inputmode="numeric" placeholder="–"><small class="${p == null ? "muted" : p >= T ? "ok" : "error"}">${v ? (p == null ? "?" : p + "%" + (p >= T ? " ✓" : "")) : ""}</small></label>`; }).join("")}</div>
+        <details ${iepOpenG[g.id] ? "open" : ""} data-iepo="${esc(g.id)}"><summary class="small link">More about this goal</summary>
+          <p class="small"><b>Area:</b> ${esc(g.area || "")} · <b>Measured as:</b> ${esc(g.measure || "")}</p>
+          <p class="small"><b>Started at:</b> ${esc(g.baseline || "")}</p>
+          <p class="small"><b>Who works on it:</b> ${esc(g.who || "")}</p>
+          <ul class="tasks">${(g.steps || []).map((x) => `<li><b>${esc(niceDate(x.by))}</b>${x.pct ? " · " + x.pct + "%" : ""}${x.cues ? " · " + esc(x.cues) : ""}${x.note ? " · " + esc(x.note) : ""}</li>`).join("")}</ul>
+        </details>
+        ${st.star && mail(g) ? `<a class="btn" href="${mail(g)}" style="margin-top:10px;text-decoration:none">✉️ Thank the team</a>` : ""}
+      </div>`; }).join("")}
+    <div class="card"><h2>School team</h2>${Object.entries(team).map(([r, t]) => `<div class="staff-row"><div><b>${esc(t.name || "")}</b><div class="muted small">${esc(IEP_ROLES[r] || r)}</div></div><div class="small">${t.email ? `<a href="mailto:${esc(t.email)}">${esc(t.email)}</a>` : ""}</div></div>`).join("")}</div>`;
+  $("page").querySelectorAll("[data-iw]").forEach((b) => (b.onclick = () => { iepWeek += +b.dataset.iw; drawIEP(client); }));
+  $("page").querySelectorAll("[data-iepo]").forEach((el) => (el.ontoggle = () => (iepOpenG[el.dataset.iepo] = el.open)));
+  $("page").querySelectorAll("[data-iepv]").forEach((el) => (el.onchange = async () => {
+    const [gid, k] = el.dataset.iepv.split("|"), v = el.value.trim();
+    const days2 = { ...(iepData[gid] || {}) }; if (v) days2[k] = v; else delete days2[k];
+    iepData[gid] = days2;
+    try { await setDoc(doc(db, "clients", client.id, "iepdata", gid), { days: days2 }); } catch (e) { el.style.borderColor = "var(--error)"; }
+  }));
+}
+
+// ---------- Staff hours check: 40 hrs/week, 8 hrs/day, never 7 days in a row ----------
+function hoursCheck() {
+  const mon = new Date(); mon.setHours(0, 0, 0, 0); mon.setDate(mon.getDate() - ((mon.getDay() + 6) % 7));
+  const per = {}; // name -> {week mins, byDay {dateKey: mins}}
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(mon); d.setDate(d.getDate() + i);
+    blocksFor(d).forEach((it) => {
+      const c = coverOf(it); if (c.kind !== "staff" || !it.s) return;
+      const s = mins(it.s), e = it.e === "24:00" ? 1440 : mins(it.e), m = e > s ? e - s : 1440 - s + e;
+      const who = c.who; per[who] = per[who] || { total: 0, days: {} }; per[who].total += m; per[who].days[dateKey(d)] = (per[who].days[dateKey(d)] || 0) + m;
+    });
+  }
+  const real = sched.staff.map((s) => s.name);
+  const nameOf = (w) => real.find((n) => n.toLowerCase().includes(w.toLowerCase())) || w;
+  const rows = Object.entries(per).filter(([w]) => !/school|program|staff$|ethos/i.test(w)).map(([w, v]) => {
+    const maxDay = Math.max(...Object.values(v.days)), nDays = Object.keys(v.days).length, h = (m) => Math.round(m / 6) / 10;
+    const warn = []; if (v.total > 2400) warn.push("over 40 hrs"); if (maxDay > 480) warn.push("a day over 8 hrs"); if (nDays >= 7) warn.push("all 7 days");
+    return `<div class="block-row${warn.length ? " is-gap" : ""}"><div class="block-main"><b>${esc(nameOf(w))}</b><div class="muted small">${h(v.total)} hrs this week · longest day ${h(maxDay)} hrs · ${nDays} day${nDays > 1 ? "s" : ""}</div></div>${warn.length ? `<span class="who gap">${esc(warn.join(", "))}</span>` : `<span class="who staff">OK</span>`}</div>`;
+  });
+  return rows.length ? `<div class="card"><h2>Hours check</h2><p class="hint">This week, from the schedule. Limits: 40 hrs a week, 8 hrs a day, not all 7 days.</p>${rows.join("")}</div>` : "";
+}
+
 // ---------------- Import (Adria only) ----------------
 $("import-file").onchange = async (e) => {
   const f = e.target.files[0]; e.target.value = "";
@@ -943,6 +1031,14 @@ async function importText(text) {
     if (data.goals) batch.set(doc(db, "clients", data.client, "info", "goals"), data.goals);
     if (data.plans) batch.set(doc(db, "clients", data.client, "info", "plans-a"), data.plans);
     if (data.plans2) batch.set(doc(db, "clients", data.client, "info", "plans-b"), data.plans2);
+    if (data.upcoming) batch.set(doc(db, "clients", data.client, "info", "upcoming"), { list: data.upcoming });
+    if (data.iep) {
+      // goals can come in more than one paste: new ones are added to what's already saved
+      const cur = await getDoc(doc(db, "clients", data.client, "info", "iep"));
+      const old = cur.exists() ? cur.data() : { goals: [], team: {} };
+      const ids = new Set((data.iep.goals || []).map((g) => g.id));
+      batch.set(doc(db, "clients", data.client, "info", "iep"), { team: { ...(old.team || {}), ...(data.iep.team || {}) }, goals: (old.goals || []).filter((g) => !ids.has(g.id)).concat(data.iep.goals || []) });
+    }
     Object.entries(data.people || {}).forEach(([pid, v]) => batch.set(doc(db, "clients", data.client, "people", pid), v, { merge: true }));
     await batch.commit();
     const parts = [];
@@ -952,12 +1048,14 @@ async function importText(text) {
     if (data.services) parts.push("services");
     if (data.goals) parts.push("goals");
     if (data.plans || data.plans2) parts.push("day program plans");
+    if (data.iep) parts.push((data.iep.goals || []).length + " IEP goals");
+    if (data.upcoming) parts.push("coming up");
     if (data.people) parts.push("schedule");
     out.textContent = `Imported ${top.label}: ${parts.join(", ")}. ✓`;
     out.dataset.kind = "ok";
     await loadAccess(me.user);
     if (!me.clients.some((c) => c.id === data.client)) me.clients.push({ id: data.client, label: top.label });
-    location.hash = "#/c/" + data.client + "/" + (data.client === "SUP" ? (Object.keys(data.people || {})[0] || "") : data.todos ? "todo" : data.goals ? "goals" : (data.plans || data.plans2) ? "schedule" : "staffing");
+    location.hash = "#/c/" + data.client + "/" + (data.client === "SUP" ? (Object.keys(data.people || {})[0] || "") : data.todos ? "todo" : data.goals ? "goals" : data.iep ? "iep" : (data.plans || data.plans2 || data.upcoming) ? "schedule" : "staffing");
     route();
     return true;
   } catch (err) {

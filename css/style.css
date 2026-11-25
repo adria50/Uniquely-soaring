@@ -243,3 +243,8 @@ textarea { width: 100%; padding: 10px 14px; font: inherit; font-size: .9rem; col
 .skill-edit { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; align-items: center; padding: 8px 0; border-top: 1px solid var(--line); }
 .skill-edit input { min-height: 42px; }
 @media (max-width: 560px) { .skill-edit { grid-template-columns: 1fr; } }
+.iep-days { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; margin: 6px 0 10px; }
+.iep-days label { display: flex; flex-direction: column; align-items: center; gap: 3px; margin: 0; font-size: .78rem; font-weight: 600; color: var(--muted); }
+.iep-days input { text-align: center; padding: 6px; min-height: 42px; }
+.iep-days small.ok { color: var(--ok); } .iep-days small.error { color: var(--error); }
+.iep-card details { margin-top: 4px; }
