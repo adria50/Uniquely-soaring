@@ -44,11 +44,28 @@
       </form>
     </section>
 
-    <section id="home" class="card home-card" hidden>
-      <h2>Welcome, <span id="who"></span> 👋</h2>
-      <p class="muted">Signed in as <span id="who-email"></span></p>
-      <p>Your access is being set up. Once it's ready, you'll see your schedule, staff and to-dos here.</p>
-      <button id="signout" class="btn" type="button">Sign out</button>
+    <section id="home" hidden>
+      <div class="card home-card">
+        <h2>Welcome, <span id="who"></span> 👋</h2>
+        <p class="muted">Signed in as <span id="who-email"></span></p>
+        <div id="client-list" class="client-list"></div>
+        <div id="admin-tools" hidden>
+          <label class="btn" for="import-file">Import from a file</label>
+          <input id="import-file" type="file" accept=".json,application/json" hidden>
+          <div id="import-msg" role="status" aria-live="polite"></div>
+        </div>
+        <button class="btn" type="button" data-signout>Sign out</button>
+      </div>
+    </section>
+
+    <section id="client" hidden>
+      <div class="client-head">
+        <a id="back-home" href="#/" class="link">‹ All clients</a>
+        <h2 id="client-title"></h2>
+      </div>
+      <nav id="page-tabs" class="tabs" aria-label="Pages"></nav>
+      <div id="page"></div>
+      <button class="btn signout-bottom" type="button" data-signout>Sign out</button>
     </section>
   </main>
   <script type="module" src="js/app.js"></script>
