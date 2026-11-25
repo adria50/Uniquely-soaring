@@ -1,4 +1,4 @@
-import { auth, db } from "./firebase.js?v=7";
+import { auth, db } from "./firebase.js?v=8";
 import {
   GoogleAuthProvider, signInWithPopup, signInWithEmailAndPassword,
   createUserWithEmailAndPassword, sendPasswordResetEmail, onAuthStateChanged, signOut
@@ -228,7 +228,8 @@ function timeRange(it) { if (!it.s) return ""; if (it.s === "00:00" && it.e === 
 function coverOf(it) {
   const c = it.cover || "";
   const you = (s) => s.replace(/^You\b/, "Adria");
-  if (it.open) return { who: you(it.byWho || (c.includes("·") ? c.split("·")[1].trim() : c && c !== "Respite" ? c : "No one yet")), kind: "gap" };
+  if (it.open) return { who: you(it.byWho || (c.includes("·") ? c.split("·")[1].trim() : /^You\b/.test(c) ? c : "No one yet")), kind: "gap" };
+  if (it.who) return { who: it.who, kind: "staff" };
   if (/^IHSS \(you\)$/i.test(c) || /^You\b/.test(c)) return { who: "Adria", kind: "you" };
   if (c.includes("·")) { const [svc, who] = c.split("·").map((x) => x.trim()); return { who, svc, kind: "staff" }; }
   if (c) return { who: c, kind: "staff" };
@@ -377,13 +378,14 @@ function drawSchedule(client) {
 }
 
 // ---------------- Page 4: Goals & progress ----------------
-const LEVELS = [["own", "On his own"], ["help", "With help"], ["not", "Not today"]];
+let LEVELS = [["own", "On his own"], ["help", "With help"], ["not", "Not today"]];
 let goals = null, logs = [], draft = { date: null, ratings: {}, note: "" }, openSkill = null, logsOpen = false;
 async function renderGoals(client) {
   $("page").innerHTML = `<p class="muted">Loading…</p>`;
   try { const g = await getDoc(doc(db, "clients", client.id, "info", "goals")); goals = g.exists() ? g.data() : null; }
   catch (e) { $("page").innerHTML = `<div class="card"><p class="error">Couldn't load goals. Check your connection.</p></div>`; return; }
   if (!goals) { $("page").innerHTML = `<div class="card"><p class="muted">No goals added yet.</p></div>`; return; }
+  LEVELS = [["own", goals.ownLabel || "On their own"], ["help", "With help"], ["not", "Not today"]];
   draft = { date: dateKey(new Date()), ratings: {}, note: "" }; openSkill = null;
   unsub = onSnapshot(collection(db, "clients", client.id, "logs"), (snap) => {
     logs = snap.docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => (b.date || "").localeCompare(a.date || "") || (b.at || 0) - (a.at || 0));
@@ -391,6 +393,8 @@ async function renderGoals(client) {
   }, () => { logs = []; drawGoals(client); });
 }
 const allSkills = () => (goals.groups || []).flatMap((g) => g.items);
+// Group title shown before the first skill of each group (only when there's more than one group)
+function groupHead(id) { const gs = goals.groups || []; if (gs.length < 2) return ""; const g = gs.find((x) => x.items[0] && x.items[0].id === id); return g ? `<h3 class="grp">${esc(g.g)}</h3>` : ""; }
 function trendFor(id) {
   const r = logs.filter((l) => l.ratings && l.ratings[id]).map((l) => ({ v: l.ratings[id], date: l.date })); // newest first
   const score = (v) => (v === "own" ? 2 : v === "help" ? 1 : 0);
@@ -415,9 +419,9 @@ function drawGoals(client) {
       <p class="hint">Tap each skill you worked on, then choose how it went.</p>
       <label class="due-label">Date <input id="log-date" type="date" value="${esc(draft.date)}"></label>
       <div class="skill-pick">
-        ${skills.map((s) => { const v = draft.ratings[s.id];
-          return `<div class="skill-item${v ? " rated" : ""}">
-            <button class="skill-name" data-open="${s.id}">${esc(s.t)}${v ? `<span class="lvl ${v}">${LEVELS.find((l) => l[0] === v)[1]}</span>` : ""}</button>
+        ${skills.map((s) => { const v = draft.ratings[s.id]; const gh = groupHead(s.id);
+          return `${gh}<div class="skill-item${v ? " rated" : ""}">
+            <button class="skill-name" data-open="${s.id}"><span>${esc(s.t)}${s.note ? `<small class="skill-note">${esc(s.note)}</small>` : ""}</span>${v ? `<span class="lvl ${v}">${LEVELS.find((l) => l[0] === v)[1]}</span>` : ""}</button>
             ${openSkill === s.id ? `<div class="lvl-row">${LEVELS.map(([k, l]) => `<button class="lvl-btn ${k}" aria-pressed="${v === k}" data-rate="${s.id}" data-lvl="${k}">${l}</button>`).join("")}${v ? `<button class="link" data-clear="${s.id}">Clear</button>` : ""}</div>` : ""}
           </div>`; }).join("")}
       </div>
@@ -430,7 +434,7 @@ function drawGoals(client) {
       <h2>Progress</h2>
       <p class="hint">Last 8 times each skill was logged. <span class="dot own"></span> on his own <span class="dot help"></span> with help <span class="dot not"></span> not today</p>
       ${skills.map((s) => { const t = trendFor(s.id);
-        return `<div class="prog-row"><div class="prog-name">${esc(s.t)}${t.last ? `<div class="muted small">Last: ${esc(t.last.date)}</div>` : ""}</div>
+        return `${groupHead(s.id)}<div class="prog-row"><div class="prog-name">${esc(s.t)}${t.last ? `<div class="muted small">Last: ${esc(t.last.date)}</div>` : ""}</div>
           <div class="prog-dots">${t.recent.map((x) => `<span class="dot ${x.v}" title="${esc(x.date)}"></span>`).join("") || `<span class="muted small">Not logged yet</span>`}</div>
           <div class="prog-trend">${t.trend === "up" ? "↑ Growing" : t.trend === "down" ? "↓ Slipping" : t.trend === "same" ? "→ Steady" : ""}</div></div>`; }).join("")}
     </div>

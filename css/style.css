@@ -212,3 +212,5 @@ textarea { width: 100%; padding: 10px 14px; font: inherit; font-size: .9rem; col
 .log-head .del { margin-left: auto; font-size: .88rem; color: var(--error); }
 .log-row p { margin: 6px 0 0; }
 @media (max-width: 520px) { .prog-row { flex-wrap: wrap; } .prog-trend { width: auto; } }
+.skill-note { display: block; font-weight: 400; color: var(--muted); font-size: .82rem; margin-top: 2px; }
+.grp { margin: 14px 0 4px; font-size: .95rem; color: var(--sky-dark); }
