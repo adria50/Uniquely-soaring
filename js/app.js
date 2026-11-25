@@ -251,7 +251,7 @@ function drawSupEditor(client, tab, all, flex) {
   $("flex-form").onsubmit = async (e) => {
     e.preventDefault();
     const h = Math.max(0, Math.min(6, +$("fx-h").value || 0));
-    try { await setDoc(ref, { flex: { hours: h, t: (flex && flex.t) || tab.name.replace(/^./, "") + " schedules", sb: $("fx-sb").value.trim() } }, { merge: true }); $("fx-msg").textContent = "Saved ✓"; $("fx-msg").className = "small ok"; }
+    try { await setDoc(ref, { flex: { hours: h, t: (flex && flex.t) || "They schedule", sb: $("fx-sb").value.trim() } }, { merge: true }); $("fx-msg").textContent = "Saved ✓"; $("fx-msg").className = "small ok"; }
     catch (err) { $("fx-msg").textContent = "Didn't save."; $("fx-msg").className = "small error"; }
   };
 }
