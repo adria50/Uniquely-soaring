@@ -174,3 +174,9 @@ textarea { width: 100%; padding: 10px 14px; font: inherit; font-size: .9rem; col
 .day-card h2 { gap: 10px; }
 .tasks { margin: 6px 0 0; padding-left: 18px; font-size: .88rem; }
 .tasks li { margin: 2px 0; }
+
+/* Services */
+.svc-top { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 10px; }
+.svc-top h2 { margin: 0; }
+.svc-grid { display: grid; grid-template-columns: 7em 1fr; gap: 8px 12px; font-size: .95rem; }
+.svc-grid .lab { color: var(--muted); font-weight: 600; font-size: .88rem; padding-top: 1px; }

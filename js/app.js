@@ -1,4 +1,4 @@
-import { auth, db } from "./firebase.js?v=5";
+import { auth, db } from "./firebase.js?v=6";
 import {
   GoogleAuthProvider, signInWithPopup, signInWithEmailAndPassword,
   createUserWithEmailAndPassword, sendPasswordResetEmail, onAuthStateChanged, signOut
@@ -119,6 +119,7 @@ function renderClient(client, page) {
   if (page === "todo") return renderTodo(client);
   if (page === "staffing") return renderStaffing(client);
   if (page === "schedule") return renderSchedule(client);
+  if (page === "services") return renderServices(client);
   $("page").innerHTML = `<div class="card"><p class="muted">Coming soon. We're building this page next.</p></div>`;
 }
 
@@ -372,6 +373,44 @@ function drawSchedule(client) {
   $("page").querySelectorAll("[data-wk]").forEach((b) => (b.onclick = () => { schedWeek += +b.dataset.wk; drawSchedule(client); }));
   $("page").querySelectorAll("[data-plan]").forEach((b) => (b.onclick = () => { schedPlan = b.dataset.plan; drawSchedule(client); }));
   $("grid-box").ontoggle = (e) => { if (e.target.open !== gridOpen) { gridOpen = e.target.open; drawSchedule(client); } };
+}
+
+// ---------------- Page 5: Services ----------------
+async function renderServices(client) {
+  $("page").innerHTML = `<p class="muted">Loading…</p>`;
+  let list = {};
+  try { const s = await getDoc(doc(db, "clients", client.id, "info", "services")); list = s.exists() ? s.data().list || {} : {}; }
+  catch (e) { $("page").innerHTML = `<div class="card"><p class="error">Couldn't load services. Check your connection.</p></div>`; return; }
+  // Group blocks that share the same service (like Respite and Overnight respite)
+  const groups = new Map();
+  Object.entries(list).forEach(([block, s]) => {
+    if (!s.service) return;
+    const key = s.service + "|" + (s.vendor || "") + "|" + (s.through && s.through.name || "");
+    if (!groups.has(key)) groups.set(key, { ...s, blocks: [] });
+    groups.get(key).blocks.push(block);
+  });
+  const who = (o) => o && typeof o === "object" ? `<div><b>${esc(o.name)}</b></div>${o.sub ? `<div class="muted small">${linkify(o.sub)}</div>` : ""}` : "";
+  const cards = [...groups.values()].sort((a, b) => a.service.localeCompare(b.service)).map((s) => {
+    const authorized = s.auth && !/^Not authorized/i.test(s.auth);
+    const people = (s.staff || []).map((x) => x.n === "Adria" ? "Adria" : x.n).join(", ");
+    return `<div class="card svc-card">
+      <div class="svc-top"><h2>${esc(s.service)}</h2><span class="who ${authorized ? "staff" : "gap"}">${authorized ? "Authorized" : "Not yet"}</span></div>
+      <div class="svc-grid">
+        <div class="lab">Hours</div><div>${esc(s.auth || "—")}</div>
+        ${s.by ? `<div class="lab">Paid by</div><div>${who(s.by)}</div>` : ""}
+        <div class="lab">Through</div><div>${s.through && typeof s.through === "object" ? who(s.through) : s.through === "none" ? "No agency" : "Not chosen yet"}</div>
+        ${s.vendor ? `<div class="lab">Vendor #</div><div>${esc(s.vendor)}</div>` : ""}
+        ${people ? `<div class="lab">Provider</div><div>${esc(people)}</div>` : ""}
+        <div class="lab">Used for</div><div class="muted">${esc(s.blocks.join(", "))}</div>
+      </div></div>`;
+  }).join("");
+  $("page").innerHTML = cards || `<div class="card"><p class="muted">No services added yet.</p></div>`;
+}
+// Turn emails and phone numbers into tappable links
+function linkify(text) {
+  return esc(text)
+    .replace(/([\w.+-]+@[\w-]+\.[\w.]+)/g, '<a href="mailto:$1">$1</a>')
+    .replace(/(\(?\d{3}\)?[\s-]\d{3}-\d{4})/g, (m) => `<a href="tel:${m.replace(/\D/g, "")}">${m}</a>`);
 }
 
 // ---------------- Import (Adria only) ----------------
