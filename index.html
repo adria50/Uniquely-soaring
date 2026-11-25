@@ -50,7 +50,10 @@
         <p class="muted">Signed in as <span id="who-email"></span></p>
         <div id="client-list" class="client-list"></div>
         <div id="admin-tools" hidden>
-          <label class="btn" for="import-file">Import from a file</label>
+          <label for="import-text">Import (paste what Claude gives you)</label>
+          <textarea id="import-text" rows="4" placeholder="Paste here"></textarea>
+          <button id="import-go" class="btn primary" type="button">Import</button>
+          <label class="link file-link" for="import-file">or pick a file</label>
           <input id="import-file" type="file" accept=".json,application/json" hidden>
           <div id="import-msg" role="status" aria-live="polite"></div>
         </div>

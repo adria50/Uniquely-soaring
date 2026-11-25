@@ -204,10 +204,16 @@ function drawTodo(client) {
 // ---------------- Import (Adria only) ----------------
 $("import-file").onchange = async (e) => {
   const f = e.target.files[0]; e.target.value = "";
-  if (!f) return;
+  if (f) await importText(await f.text());
+};
+$("import-go").onclick = async () => {
+  const t = $("import-text").value.trim();
+  if (t && await importText(t)) $("import-text").value = "";
+};
+async function importText(text) {
   const out = $("import-msg");
   try {
-    const data = JSON.parse(await f.text());
+    const data = JSON.parse(text.replace(/[“”]/g, '"').replace(/[‘’]/g, "'"));
     if (data.kind !== "uniquely-soaring-import" || !/^[A-Za-z]+$/.test(data.client || "")) throw new Error("not ours");
     const batch = writeBatch(db);
     batch.set(doc(db, "clients", data.client), { label: data.label || "Client: " + data.client, updatedAt: serverTimestamp() }, { merge: true });
@@ -216,11 +222,13 @@ $("import-file").onchange = async (e) => {
     out.textContent = `Imported ${data.label || data.client}: ${(data.todos || []).length} to-dos. ✓`;
     out.dataset.kind = "ok";
     await loadAccess(me.user); renderHome();
+    return true;
   } catch (err) {
-    out.textContent = "That file didn't import. Make sure it's the file from Claude.";
+    out.textContent = "That didn't import. Make sure you pasted the whole box from Claude.";
     out.dataset.kind = "error";
+    return false;
   }
-};
+}
 
 // ---------------- Start ----------------
 onAuthStateChanged(auth, async (user) => {
