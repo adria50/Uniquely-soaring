@@ -237,3 +237,4 @@ textarea { width: 100%; padding: 10px 14px; font: inherit; font-size: .9rem; col
 .edit-list { margin: 12px 0; }
 .edit-list .link { flex: none; font-size: .9rem; }
 #sup-done { margin-top: 6px; }
+#access-tab { width: 100%; min-height: 46px; font: inherit; border: 1px solid var(--line); border-radius: 12px; background: #fbfcfe; padding: 8px 12px; }
