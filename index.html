@@ -2,30 +2,55 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="robots" content="noindex">
   <title>Uniquely Soaring</title>
-  <style>
-    body {
-      margin: 0;
-      min-height: 100vh;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      background: linear-gradient(160deg, #e8f1fb 0%, #fdf6ec 100%);
-      color: #1f2a44;
-      text-align: center;
-      padding: 24px;
-    }
-    h1 { font-size: 2.4rem; margin: 0 0 12px; }
-    p { font-size: 1.1rem; margin: 0; color: #4a5672; }
-  </style>
+  <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
   <main>
-    <h1>Uniquely Soaring</h1>
-    <p>Dreaming big and doing it, with a different ability.</p>
-    <p style="margin-top:20px;font-size:.95rem;">Coming soon.</p>
+    <div class="brand">
+      <svg viewBox="0 0 64 64" aria-hidden="true">
+        <circle cx="32" cy="32" r="30" fill="#2f6fd6"/>
+        <circle cx="45" cy="19" r="6" fill="#f4a93b"/>
+        <path d="M10 40 C 20 30, 26 30, 32 36 C 38 30, 44 30, 54 40 C 44 36, 38 38, 32 44 C 26 38, 20 36, 10 40 Z" fill="#fff"/>
+      </svg>
+      <h1>Uniquely Soaring</h1>
+      <p>Dreaming big and doing it, with a different ability.</p>
+    </div>
+
+    <section id="loading" class="center">Loading…</section>
+
+    <section id="signin" class="card" hidden>
+      <button id="google" class="btn" type="button">
+        <svg viewBox="0 0 48 48" aria-hidden="true"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 7.9 3l5.7-5.7C34 6 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z"/><path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.8 1.2 7.9 3l5.7-5.7C34 6 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-8l-6.5 5C9.5 39.6 16.2 44 24 44z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.1-2.4-.4-3.5z"/></svg>
+        Sign in with Google
+      </button>
+
+      <div class="or">or</div>
+
+      <form id="email-form" novalidate>
+        <h2 id="form-title">Sign in with email</h2>
+        <label for="email">Email</label>
+        <input id="email" type="email" autocomplete="email" required>
+        <label for="password">Password</label>
+        <input id="password" type="password" autocomplete="current-password" required minlength="6">
+        <button id="submit" class="btn primary" type="submit">Sign in</button>
+        <div class="row">
+          <span id="switch"></span>
+          <button id="forgot" type="button" class="link">Forgot password?</button>
+        </div>
+        <div id="msg" role="status" aria-live="polite"></div>
+      </form>
+    </section>
+
+    <section id="home" class="card home-card" hidden>
+      <h2>Welcome, <span id="who"></span> 👋</h2>
+      <p class="muted">Signed in as <span id="who-email"></span></p>
+      <p>Your access is being set up. Once it's ready, you'll see your schedule, staff and to-dos here.</p>
+      <button id="signout" class="btn" type="button">Sign out</button>
+    </section>
   </main>
+  <script type="module" src="js/app.js"></script>
 </body>
 </html>
