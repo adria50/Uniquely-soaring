@@ -214,3 +214,18 @@ textarea { width: 100%; padding: 10px 14px; font: inherit; font-size: .9rem; col
 @media (max-width: 520px) { .prog-row { flex-wrap: wrap; } .prog-trend { width: auto; } }
 .skill-note { display: block; font-weight: 400; color: var(--muted); font-size: .82rem; margin-top: 2px; }
 .grp { margin: 14px 0 4px; font-size: .95rem; color: var(--sky-dark); }
+
+/* Access + verify */
+#access-box { border-top: 1px solid var(--line); margin-top: 18px; padding-top: 4px; }
+#access-box h3 { margin: 14px 0 6px; }
+.access-row { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-top: 1px solid var(--line); }
+.access-row:first-child { border-top: 0; }
+.access-row > div { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.access-row .del { color: var(--error); font-size: .9rem; }
+.picks { display: flex; flex-direction: column; gap: 8px; margin: 12px 0 4px; }
+.pick { display: flex; align-items: center; gap: 10px; font-weight: 600; margin: 0; }
+.pick input { width: 22px; min-height: 22px; height: 22px; }
+.notice { background: #fff6e6; border: 1px solid #f1d7a6; border-radius: 12px; padding: 14px; margin: 14px 0; }
+.notice p { margin: 0 0 10px; }
+.notice .link { margin-top: 10px; }
+.small.ok { color: var(--ok); }

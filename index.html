@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="robots" content="noindex">
   <title>Uniquely Soaring</title>
-  <link rel="stylesheet" href="css/style.css?v=9">
+  <link rel="stylesheet" href="css/style.css?v=10">
 </head>
 <body>
   <main>
@@ -49,6 +49,23 @@
         <h2>Welcome, <span id="who"></span> 👋</h2>
         <p class="muted">Signed in as <span id="who-email"></span></p>
         <div id="client-list" class="client-list"></div>
+        <div id="verify-box" class="notice" hidden>
+          <p><b>One more step:</b> we sent a link to your email. Tap it to confirm it's really you, then come back and tap the button below.</p>
+          <button id="verify-done" class="btn primary" type="button">I tapped the link</button>
+          <button id="verify-resend" class="link" type="button">Send the link again</button>
+          <div id="verify-msg" class="small" role="status"></div>
+        </div>
+        <div id="access-box" hidden>
+          <h3>Who can see what</h3>
+          <div id="access-list"></div>
+          <form id="access-form" class="add">
+            <label for="access-email">Add someone (their email)</label>
+            <input id="access-email" type="email" placeholder="name@example.com" required autocomplete="off">
+            <div id="access-picks" class="picks"></div>
+            <button class="btn primary" type="submit">Give access</button>
+            <div id="access-msg" class="small" role="status"></div>
+          </form>
+        </div>
         <div id="admin-tools" hidden>
           <label for="import-text">Import (paste what Claude gives you)</label>
           <textarea id="import-text" rows="4" placeholder="Paste here"></textarea>
@@ -71,6 +88,6 @@
       <button class="btn signout-bottom" type="button" data-signout>Sign out</button>
     </section>
   </main>
-  <script type="module" src="js/app.js?v=9"></script>
+  <script type="module" src="js/app.js?v=10"></script>
 </body>
 </html>

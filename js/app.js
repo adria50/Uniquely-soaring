@@ -1,7 +1,7 @@
-import { auth, db } from "./firebase.js?v=9";
+import { auth, db } from "./firebase.js?v=10";
 import {
   GoogleAuthProvider, signInWithPopup, signInWithEmailAndPassword,
-  createUserWithEmailAndPassword, sendPasswordResetEmail, onAuthStateChanged, signOut
+  createUserWithEmailAndPassword, sendPasswordResetEmail, onAuthStateChanged, signOut, sendEmailVerification
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
   collection, doc, getDoc, getDocs, onSnapshot, setDoc, updateDoc, deleteDoc,
@@ -44,7 +44,10 @@ $("email-form").onsubmit = async (ev) => {
   ev.preventDefault();
   const email = $("email").value.trim(), pw = $("password").value;
   $("submit").disabled = true; setMsg("");
-  try { if (mode === "create") await createUserWithEmailAndPassword(auth, email, pw); else await signInWithEmailAndPassword(auth, email, pw); }
+  try {
+    if (mode === "create") { const cred = await createUserWithEmailAndPassword(auth, email, pw); await sendEmailVerification(cred.user).catch(() => {}); }
+    else await signInWithEmailAndPassword(auth, email, pw);
+  }
   catch (e) { setMsg(friendly(e)); }
   $("submit").disabled = false;
 };
@@ -77,6 +80,46 @@ async function loadAccess(user) {
   me.clients.sort((a, b) => a.id.localeCompare(b.id));
 }
 
+// ---------------- Email check (for people who signed up with a password) ----------------
+$("verify-done").onclick = async () => {
+  await auth.currentUser.reload();
+  if (auth.currentUser.emailVerified) { await auth.currentUser.getIdToken(true); me.user = auth.currentUser; await loadAccess(me.user); route(); }
+  else { $("verify-msg").textContent = "Not confirmed yet. Check your email (and spam) for the link."; $("verify-msg").className = "small error"; }
+};
+$("verify-resend").onclick = async () => {
+  try { await sendEmailVerification(auth.currentUser); $("verify-msg").textContent = "Sent. Check your email."; $("verify-msg").className = "small ok"; }
+  catch (e) { $("verify-msg").textContent = "Couldn't send right now. Wait a minute and try again."; $("verify-msg").className = "small error"; }
+};
+
+// ---------------- Access (Adria only): who can see which client ----------------
+async function drawAccess() {
+  const list = $("access-list");
+  let rows = [];
+  try { rows = (await getDocs(collection(db, "access"))).docs.map((d) => ({ email: d.id, clients: d.data().clients || [] })); }
+  catch (e) { list.innerHTML = `<p class="error small">Couldn't load the access list.</p>`; return; }
+  const label = (id) => (me.clients.find((c) => c.id === id) || { label: id }).label.replace(/^Client:\s*/, "");
+  list.innerHTML = rows.length ? rows.map((r) => `<div class="access-row"><div><b>${esc(r.email)}</b><div class="muted small">${esc(r.clients.map(label).join(", ") || "Nothing")}</div></div><button class="link del" data-rm="${esc(r.email)}">Remove</button></div>`).join("")
+    : `<p class="muted small">Only you, so far.</p>`;
+  $("access-picks").innerHTML = me.clients.map((c) => `<label class="pick"><input type="checkbox" value="${esc(c.id)}"> ${esc(c.label.replace(/^Client:\s*/, ""))}</label>`).join("");
+  list.querySelectorAll("[data-rm]").forEach((b) => (b.onclick = async () => {
+    if (!confirm(`Remove ${b.dataset.rm}? They won't be able to see anything.`)) return;
+    await deleteDoc(doc(db, "access", b.dataset.rm)); drawAccess();
+  }));
+}
+$("access-form").onsubmit = async (e) => {
+  e.preventDefault();
+  const email = $("access-email").value.trim().toLowerCase();
+  const clients = [...document.querySelectorAll("#access-picks input:checked")].map((x) => x.value);
+  const msg = $("access-msg");
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) { msg.textContent = "That email doesn't look right."; msg.className = "small error"; return; }
+  if (!clients.length) { msg.textContent = "Check at least one client."; msg.className = "small error"; return; }
+  try {
+    await setDoc(doc(db, "access", email), { clients, updatedAt: serverTimestamp() });
+    msg.textContent = `Done. ${email} can sign in at uniquelysoaring.com now.`; msg.className = "small ok";
+    $("access-email").value = ""; drawAccess();
+  } catch (err) { msg.textContent = "Didn't save. Try again."; msg.className = "small error"; }
+};
+
 // ---------------- Pages ----------------
 const PAGES = [
   ["todo", "To-do"],
@@ -107,6 +150,9 @@ function renderHome() {
     ? me.clients.map((c) => `<a class="client-card" href="#/c/${esc(c.id)}/todo"><span>${esc(c.label)}</span><span aria-hidden="true">›</span></a>`).join("")
     : `<p class="muted">${me.admin ? "No clients yet. Tap Import to add one." : "Your access is being set up. Once it's ready, you'll see your client here."}</p>`;
   $("admin-tools").hidden = !me.admin;
+  $("verify-box").hidden = !!me.user.emailVerified;
+  $("access-box").hidden = !me.admin;
+  if (me.admin) drawAccess();
   show("home");
 }
 
