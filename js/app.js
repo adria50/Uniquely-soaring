@@ -1,4 +1,4 @@
-import { auth, db } from "./firebase.js?v=11";
+import { auth, db } from "./firebase.js?v=12";
 import {
   GoogleAuthProvider, signInWithPopup, signInWithEmailAndPassword,
   createUserWithEmailAndPassword, sendPasswordResetEmail, onAuthStateChanged, signOut, sendEmailVerification
@@ -163,17 +163,46 @@ function renderHome() {
 function renderClient(client, page) {
   $("client-title").textContent = client.label;
   $("back-home").hidden = !me.admin && me.clients.length === 1;
-  const pages = client.id === "SUP" ? PAGES.filter(([k]) => ["todo", "staffing", "schedule"].includes(k)) : PAGES;
-  if (!pages.some(([k]) => k === page)) page = "todo";
+  const pages = client.id === "SUP" ? SUP_TABS.map((t) => [t.id, t.name]) : PAGES;
+  if (!pages.some(([k]) => k === page)) page = pages[0][0];
   $("page-tabs").innerHTML = pages.map(([k, l]) =>
     `<a href="#/c/${esc(client.id)}/${k}" class="tab" aria-current="${k === page}">${l}</a>`).join("");
   show("client");
+  if (client.id === "SUP") return renderSupTab(client, SUP_TABS.find((t) => t.id === page));
   if (page === "todo") return renderTodo(client);
   if (page === "staffing") return renderStaffing(client);
   if (page === "schedule") return renderSchedule(client);
   if (page === "services") return renderServices(client);
   if (page === "goals") return renderGoals(client);
   $("page").innerHTML = `<div class="card"><p class="muted">Coming soon. We're building this page next.</p></div>`;
+}
+
+// ---------------- Supervisors: one tab per supervisor ----------------
+const SUP_TABS = [
+  { id: "ujourni", name: "UJourni", supervises: "AW" },
+  { id: "dlipscomb", name: "DLipscomb", supervises: "EzW" },
+  { id: "third", name: "Third", supervises: "" }
+];
+async function renderSupTab(client, tab) {
+  $("page").innerHTML = `
+    <div class="card"><h2>${esc(tab.name)}</h2>
+      <p class="muted">${tab.supervises ? "Supervises Client: " + esc(tab.supervises) : "Not hired yet"}</p></div>
+    <div class="card"><h2>Schedule</h2><div id="sup-sched"><p class="muted">Loading…</p></div></div>
+    <div id="sup-todo"></div>`;
+  // their to-do list (re-uses the To-do page, saved under this supervisor)
+  $("sup-todo").innerHTML = `<div id="todo-wrap"><p class="muted">Loading…</p></div>`;
+  const col = collection(db, "clients", "SUP", "people", tab.id, "todos");
+  todoPath = ["clients", "SUP", "people", tab.id, "todos"];
+  unsub = onSnapshot(col, (snap) => { todos = snap.docs.map((d) => ({ id: d.id, ...d.data() })); drawTodo(client); },
+    () => { $("todo-wrap").innerHTML = `<div class="card"><p class="error">Couldn't load the to-do list.</p></div>`; });
+  // their weekly schedule
+  try {
+    const sd = await getDoc(doc(db, "clients", "SUP", "people", tab.id));
+    const items = (sd.exists() && sd.data().schedule) || [];
+    const byDay = [1, 2, 3, 4, 5, 6, 0].map((d) => [d, items.filter((it) => (it.d || []).includes(d)).sort((a, b) => mins(a.s) - mins(b.s))]).filter(([, l]) => l.length);
+    $("sup-sched").innerHTML = byDay.length ? byDay.map(([d, l]) => `<div class="block-row"><div class="block-time">${DAYS[d]}</div><div class="block-main">${l.map((it) => `<div><b>${fmtHM(it.s)}–${fmtHM(it.e)}</b> ${esc(it.t || "")}</div>`).join("")}</div></div>`).join("")
+      : `<p class="muted">No hours set yet.</p>`;
+  } catch (e) { $("sup-sched").innerHTML = `<p class="error small">Couldn't load the schedule.</p>`; }
 }
 
 // ---------------- Page 1: To-do ----------------
@@ -190,9 +219,11 @@ function dueLabel(due) {
 }
 const byDue = (a, b) => (a.due || "9999") < (b.due || "9999") ? -1 : (a.due || "9999") > (b.due || "9999") ? 1 : 0;
 
-function renderTodo(client) {
+let todoPath = [];
+function renderTodo(client, path) {
+  todoPath = path || ["clients", client.id, "todos"];
   $("page").innerHTML = `<div id="todo-wrap"><p class="muted">Loading…</p></div>`;
-  const col = collection(db, "clients", client.id, "todos");
+  const col = collection(db, ...todoPath);
   unsub = onSnapshot(col, (snap) => {
     todos = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
     drawTodo(client);
@@ -241,10 +272,10 @@ function drawTodo(client) {
     e.preventDefault();
     const text = $("add-text").value.trim(); if (!text) return;
     const id = "u" + Date.now().toString(36);
-    await setDoc(doc(db, "clients", client.id, "todos", id), { text, status: "todo", due: $("add-due").value || null, doneAt: null, createdAt: serverTimestamp(), createdBy: me.user.email });
+    await setDoc(doc(db, ...todoPath, id), { text, status: "todo", due: $("add-due").value || null, doneAt: null, createdAt: serverTimestamp(), createdBy: me.user.email });
   };
   $("todo-wrap").querySelectorAll("[data-act]").forEach((el) => {
-    const ref = doc(db, "clients", client.id, "todos", el.dataset.id);
+    const ref = doc(db, ...todoPath, el.dataset.id);
     const t = todos.find((x) => x.id === el.dataset.id);
     if (el.dataset.act === "toggle") el.onclick = () => updateDoc(ref, t.status === "done" ? { status: "todo", doneAt: null } : { status: "done", doneAt: Date.now() });
     else el.onchange = async () => {
