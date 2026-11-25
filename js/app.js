@@ -1,4 +1,4 @@
-import { auth, db } from "./firebase.js?v=12";
+import { auth, db } from "./firebase.js?v=13";
 import {
   GoogleAuthProvider, signInWithPopup, signInWithEmailAndPassword,
   createUserWithEmailAndPassword, sendPasswordResetEmail, onAuthStateChanged, signOut, sendEmailVerification
@@ -181,7 +181,7 @@ function renderClient(client, page) {
 const SUP_TABS = [
   { id: "ujourni", name: "UJourni", supervises: "AW" },
   { id: "dlipscomb", name: "DLipscomb", supervises: "EzW" },
-  { id: "third", name: "Third", supervises: "" }
+  { id: "third", name: "TSupervisor", supervises: "EdW" }
 ];
 async function renderSupTab(client, tab) {
   $("page").innerHTML = `
@@ -200,8 +200,9 @@ async function renderSupTab(client, tab) {
     const sd = await getDoc(doc(db, "clients", "SUP", "people", tab.id));
     const items = (sd.exists() && sd.data().schedule) || [];
     const byDay = [1, 2, 3, 4, 5, 6, 0].map((d) => [d, items.filter((it) => (it.d || []).includes(d)).sort((a, b) => mins(a.s) - mins(b.s))]).filter(([, l]) => l.length);
-    $("sup-sched").innerHTML = byDay.length ? byDay.map(([d, l]) => `<div class="block-row"><div class="block-time">${DAYS[d]}</div><div class="block-main">${l.map((it) => `<div><b>${fmtHM(it.s)}–${fmtHM(it.e)}</b> ${esc(it.t || "")}</div>`).join("")}</div></div>`).join("")
-      : `<p class="muted">No hours set yet.</p>`;
+    const total = items.reduce((m, it) => m + (it.d || []).length * (mins(it.e) - mins(it.s)), 0);
+    $("sup-sched").innerHTML = (total ? `<p class="hint">${Math.round(total / 6) / 10} hrs a week</p>` : "") + (byDay.length ? byDay.map(([d, l]) => `<div class="block-row"><div class="block-time">${DAYS[d]}</div><div class="block-main">${l.map((it) => `<div><b>${fmtHM(it.s)}–${fmtHM(it.e)}</b> ${esc(it.t || "")}${it.sb ? `<div class="muted small">${esc(it.sb)}</div>` : ""}</div>`).join("")}</div></div>`).join("")
+      : `<p class="muted">No hours set yet.</p>`);
   } catch (e) { $("sup-sched").innerHTML = `<p class="error small">Couldn't load the schedule.</p>`; }
 }
 
@@ -609,6 +610,7 @@ async function importText(text) {
     (data.staff || []).forEach((s) => batch.set(doc(db, "clients", data.client, "staff", s.id), s));
     if (data.services) batch.set(doc(db, "clients", data.client, "info", "services"), { list: data.services });
     if (data.goals) batch.set(doc(db, "clients", data.client, "info", "goals"), data.goals);
+    Object.entries(data.people || {}).forEach(([pid, v]) => batch.set(doc(db, "clients", data.client, "people", pid), v, { merge: true }));
     await batch.commit();
     const parts = [];
     if (data.todos) parts.push(data.todos.length + " to-dos");
@@ -616,11 +618,12 @@ async function importText(text) {
     if (data.staff) parts.push(data.staff.length + " staff");
     if (data.services) parts.push("services");
     if (data.goals) parts.push("goals");
+    if (data.people) parts.push("schedule");
     out.textContent = `Imported ${top.label}: ${parts.join(", ")}. ✓`;
     out.dataset.kind = "ok";
     await loadAccess(me.user);
     if (!me.clients.some((c) => c.id === data.client)) me.clients.push({ id: data.client, label: top.label });
-    location.hash = "#/c/" + data.client + "/" + (data.todos ? "todo" : data.goals ? "goals" : "staffing");
+    location.hash = "#/c/" + data.client + "/" + (data.client === "SUP" ? (Object.keys(data.people || {})[0] || "") : data.todos ? "todo" : data.goals ? "goals" : "staffing");
     route();
     return true;
   } catch (err) {
