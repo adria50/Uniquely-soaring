@@ -1,4 +1,4 @@
-import { auth, db } from "./firebase.js?v=8";
+import { auth, db } from "./firebase.js?v=9";
 import {
   GoogleAuthProvider, signInWithPopup, signInWithEmailAndPassword,
   createUserWithEmailAndPassword, sendPasswordResetEmail, onAuthStateChanged, signOut
@@ -513,7 +513,9 @@ $("import-go").onclick = async () => {
 async function importText(text) {
   const out = $("import-msg");
   try {
-    const data = JSON.parse(text.replace(/[“”]/g, '"').replace(/[‘’]/g, "'"));
+    let data;
+    try { data = JSON.parse(text.replace(/[“”]/g, '"').replace(/[‘’]/g, "'")); }
+    catch (e) { out.textContent = `That looks cut off (I got ${text.length.toLocaleString()} characters). Ask Claude to split it into smaller pieces.`; out.dataset.kind = "error"; return false; }
     if (data.kind !== "uniquely-soaring-import" || !/^[A-Za-z]+$/.test(data.client || "")) throw new Error("not ours");
     const batch = writeBatch(db);
     const top = { label: data.label || "Client: " + data.client, updatedAt: serverTimestamp() };
@@ -539,7 +541,7 @@ async function importText(text) {
     route();
     return true;
   } catch (err) {
-    out.textContent = "That didn't import. Make sure you pasted the whole box from Claude.";
+    out.textContent = "That didn't save" + (err && err.code ? ` (${err.code})` : "") + ". Tell Claude what this says.";
     out.dataset.kind = "error";
     return false;
   }
