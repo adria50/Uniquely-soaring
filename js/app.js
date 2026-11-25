@@ -1,4 +1,4 @@
-import { auth, db } from "./firebase.js?v=3";
+import { auth, db } from "./firebase.js?v=4";
 import {
   GoogleAuthProvider, signInWithPopup, signInWithEmailAndPassword,
   createUserWithEmailAndPassword, sendPasswordResetEmail, onAuthStateChanged, signOut
@@ -117,6 +117,7 @@ function renderClient(client, page) {
     `<a href="#/c/${esc(client.id)}/${k}" class="tab" aria-current="${k === page}">${l}</a>`).join("");
   show("client");
   if (page === "todo") return renderTodo(client);
+  if (page === "staffing") return renderStaffing(client);
   $("page").innerHTML = `<div class="card"><p class="muted">Coming soon. We're building this page next.</p></div>`;
 }
 
@@ -201,6 +202,117 @@ function drawTodo(client) {
   });
 }
 
+// ---------------- Schedule helpers (shared by Staffing and Schedule) ----------------
+const DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const mins = (hm) => { const [h, m] = String(hm).split(":").map(Number); return h * 60 + (m || 0); };
+const fmtHM = (hm) => { let [h, m] = String(hm).split(":").map(Number); if (h === 24) h = 0; const ap = h < 12 ? "am" : "pm"; const hh = h % 12 || 12; return m ? `${hh}:${String(m).padStart(2, "0")}${ap}` : `${hh}${ap}`; };
+const dateKey = (d) => d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+// Which week of the month. A weekend counts from its Friday, so Sat/Sun belong to that Friday's weekend.
+function weekOfMonth(date, it) {
+  const d = new Date(date);
+  if (it.wk === "weekend") d.setDate(d.getDate() - ((d.getDay() + 2) % 7));
+  return Math.ceil(d.getDate() / 7);
+}
+const applies = (it, date) => (it.d || []).includes(date.getDay()) && (!it.w || it.w.includes(weekOfMonth(date, it)));
+function pickNote(it, date) {
+  if (it.sbByDay && it.sbByDay[date.getDay()]) return it.sbByDay[date.getDay()];
+  if (it.sbRot) return it.sbRot[date.getMonth()];
+  if (it.sbByWk) { const w = weekOfMonth(date, it); return it.sbByWk[w] || ""; }
+  return it.sb || "";
+}
+function timeRange(it) { if (!it.s) return ""; if (it.s === "00:00" && it.e === "24:00") return "All day"; return fmtHM(it.s) + "–" + fmtHM(it.e); }
+// Who covers a block, in plain words
+function coverOf(it) {
+  const c = it.cover || "";
+  const you = (s) => s.replace(/^You\b/, "Adria");
+  if (it.open) return { who: you(it.byWho || (c.includes("·") ? c.split("·")[1].trim() : c && c !== "Respite" ? c : "No one yet")), kind: "gap" };
+  if (/^IHSS \(you\)$/i.test(c) || /^You\b/.test(c)) return { who: "Adria", kind: "you" };
+  if (c.includes("·")) { const [svc, who] = c.split("·").map((x) => x.trim()); return { who, svc, kind: "staff" }; }
+  if (c) return { who: c, kind: "staff" };
+  return { who: it.t, kind: "program" };
+}
+
+let sched = { current: [], sdp: [], switchDate: null, staff: [] };
+async function loadSchedule(client) {
+  const [cur, sdp, top, staff] = await Promise.all([
+    getDoc(doc(db, "clients", client.id, "schedule", "current")),
+    getDoc(doc(db, "clients", client.id, "schedule", "sdp")),
+    getDoc(doc(db, "clients", client.id)),
+    getDocs(collection(db, "clients", client.id, "staff"))
+  ]);
+  sched = {
+    current: cur.exists() ? cur.data().items || [] : [],
+    sdp: sdp.exists() ? sdp.data().items || [] : [],
+    switchDate: top.exists() ? top.data().switchDate || null : null,
+    staff: staff.docs.map((d) => d.data())
+  };
+}
+const planFor = (date) => (sched.switchDate && dateKey(date) >= sched.switchDate && sched.sdp.length ? "sdp" : "current");
+function blocksFor(date) {
+  const list = sched[planFor(date)].length ? sched[planFor(date)] : sched.current.length ? sched.current : sched.sdp;
+  return list.filter((it) => applies(it, date)).sort((a, b) => (a.s ? mins(a.s) : -1) - (b.s ? mins(b.s) : -1));
+}
+// Blocks happening right now, including last night's overnight that runs past midnight
+function blocksNow() {
+  const now = new Date(), nm = now.getHours() * 60 + now.getMinutes();
+  const y = new Date(now); y.setDate(y.getDate() - 1);
+  const hits = blocksFor(now).filter((it) => it.s && (mins(it.e) > mins(it.s) ? nm >= mins(it.s) && nm < mins(it.e) : nm >= mins(it.s)));
+  blocksFor(y).forEach((it) => { if (it.s && mins(it.e) <= mins(it.s) && it.e !== "24:00" && nm < mins(it.e)) hits.push(it); });
+  return hits;
+}
+
+// ---------------- Page 2: Staffing ----------------
+let staffDay = 0; // days from today
+async function renderStaffing(client) {
+  $("page").innerHTML = `<p class="muted">Loading…</p>`;
+  try { await loadSchedule(client); } catch (e) { $("page").innerHTML = `<div class="card"><p class="error">Couldn't load staffing. Check your connection.</p></div>`; return; }
+  drawStaffing(client);
+}
+function whoChip(it) {
+  const c = coverOf(it);
+  const cls = c.kind === "gap" ? "gap" : c.kind === "you" ? "you" : c.kind === "program" ? "prog" : "staff";
+  const label = c.kind === "gap" ? (c.who === "No one yet" ? "Not covered" : `Not covered · ${esc(c.who)} covers`) : esc(c.who);
+  return `<span class="who ${cls}">${label}</span>`;
+}
+function drawStaffing(client) {
+  if (!sched.current.length && !sched.sdp.length) {
+    $("page").innerHTML = `<div class="card"><p class="muted">No schedule yet. ${me.admin ? "Ask Claude for this client's import." : ""}</p></div>`; return;
+  }
+  const now = blocksNow();
+  const day = new Date(); day.setDate(day.getDate() + staffDay);
+  const blocks = blocksFor(day);
+  const plan = planFor(day);
+  const sw = sched.switchDate ? new Date(sched.switchDate + "T00:00") : null;
+  const swNice = sw ? sw.toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" }) : "";
+  const dayBtns = Array.from({ length: 7 }, (_, i) => { const d = new Date(); d.setDate(d.getDate() + i);
+    return `<button class="day" aria-pressed="${i === staffDay}" data-day="${i}">${i === 0 ? "Today" : DAYS[d.getDay()].slice(0, 3)}</button>`; }).join("");
+  $("page").innerHTML = `
+    <div class="card now-card">
+      <h2>On right now</h2>
+      ${now.length ? now.map((it) => `<div class="now-row"><div><b>${esc(it.t)}</b><div class="muted small">${timeRange(it)}</div></div>${whoChip(it)}</div>`).join("") : `<p class="muted">Nothing scheduled right now.</p>`}
+    </div>
+    <div class="card">
+      <h2>Who's working</h2>
+      <div class="days">${dayBtns}</div>
+      <p class="hint">${DAYS[day.getDay()]}, ${day.toLocaleDateString(undefined, { month: "long", day: "numeric" })} · ${plan === "sdp" ? "SDP plan" : "Current schedule"}${sw ? (plan === "sdp" ? ` (since ${swNice})` : ` (SDP plan starts ${swNice})`) : ""}</p>
+      ${blocks.map((it) => `<div class="block-row${coverOf(it).kind === "gap" ? " is-gap" : ""}">
+        <div class="block-time">${timeRange(it) || "Any time"}</div>
+        <div class="block-main"><div><b>${esc(it.t)}</b></div>${pickNote(it, day) ? `<div class="muted small">${esc(pickNote(it, day))}</div>` : ""}</div>
+        ${whoChip(it)}</div>`).join("") || `<p class="muted">Nothing scheduled.</p>`}
+    </div>
+    <div class="card">
+      <h2>Staff</h2>
+      ${sched.staff.map((s) => `<div class="staff-row">
+        <div><b>${esc(s.name)}</b>${s.agencies && s.agencies.length ? `<div class="muted small">Through ${esc(s.agencies.join(", "))}</div>` : ""}
+        ${s.contact ? `<div class="small"><a href="mailto:${esc(s.contact)}">${esc(s.contact)}</a></div>` : ""}</div>
+        <div class="staff-hours">${Object.entries(s.hours || {}).map(([k, v]) => `<div class="small"><span class="muted">${esc(k)}:</span> ${esc(v)}</div>`).join("")}
+        ${s.target ? `<div class="small"><span class="muted">Goal:</span> ${esc(s.target)}</div>` : ""}
+        ${s.offTime ? `<div class="small"><span class="muted">Off:</span> ${esc(s.offTime)}</div>` : ""}</div></div>`).join("") || `<p class="muted">No staff added yet.</p>`}
+      <p class="hint" style="margin-top:12px">Rules: no one works more than 8 hours a day, 40 hours a week, or 7 days in a row.</p>
+    </div>`;
+  $("page").querySelectorAll("[data-day]").forEach((b) => (b.onclick = () => { staffDay = +b.dataset.day; drawStaffing(client); }));
+}
+
 // ---------------- Import (Adria only) ----------------
 $("import-file").onchange = async (e) => {
   const f = e.target.files[0]; e.target.value = "";
@@ -216,12 +328,25 @@ async function importText(text) {
     const data = JSON.parse(text.replace(/[“”]/g, '"').replace(/[‘’]/g, "'"));
     if (data.kind !== "uniquely-soaring-import" || !/^[A-Za-z]+$/.test(data.client || "")) throw new Error("not ours");
     const batch = writeBatch(db);
-    batch.set(doc(db, "clients", data.client), { label: data.label || "Client: " + data.client, updatedAt: serverTimestamp() }, { merge: true });
+    const top = { label: data.label || "Client: " + data.client, updatedAt: serverTimestamp() };
+    if (data.switchDate) top.switchDate = data.switchDate;
+    batch.set(doc(db, "clients", data.client), top, { merge: true });
     (data.todos || []).forEach((t) => batch.set(doc(db, "clients", data.client, "todos", t.id), { text: t.text, status: t.status, due: t.due || null, doneAt: t.doneAt || null }));
+    Object.entries(data.schedules || {}).forEach(([k, items]) => batch.set(doc(db, "clients", data.client, "schedule", k), { items }));
+    (data.staff || []).forEach((s) => batch.set(doc(db, "clients", data.client, "staff", s.id), s));
+    if (data.services) batch.set(doc(db, "clients", data.client, "info", "services"), { list: data.services });
     await batch.commit();
-    out.textContent = `Imported ${data.label || data.client}: ${(data.todos || []).length} to-dos. ✓`;
+    const parts = [];
+    if (data.todos) parts.push(data.todos.length + " to-dos");
+    if (data.schedules) parts.push("schedule");
+    if (data.staff) parts.push(data.staff.length + " staff");
+    if (data.services) parts.push("services");
+    out.textContent = `Imported ${top.label}: ${parts.join(", ")}. ✓`;
     out.dataset.kind = "ok";
-    await loadAccess(me.user); renderHome();
+    await loadAccess(me.user);
+    if (!me.clients.some((c) => c.id === data.client)) me.clients.push({ id: data.client, label: top.label });
+    location.hash = "#/c/" + data.client + "/" + (data.todos ? "todo" : "staffing");
+    route();
     return true;
   } catch (err) {
     out.textContent = "That didn't import. Make sure you pasted the whole box from Claude.";
