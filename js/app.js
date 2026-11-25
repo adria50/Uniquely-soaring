@@ -1,4 +1,4 @@
-import { auth, db } from "./firebase.js?v=18";
+import { auth, db } from "./firebase.js?v=19";
 import {
   GoogleAuthProvider, signInWithPopup, signInWithEmailAndPassword,
   createUserWithEmailAndPassword, sendPasswordResetEmail, onAuthStateChanged, signOut, sendEmailVerification
@@ -333,6 +333,7 @@ function row(t, client) {
       ${t.status !== "todo" ? '<option value="todo">Move to To-do</option>' : ""}
       ${t.status !== "pending" ? '<option value="pending">Move to Pending</option>' : ""}
       ${t.status !== "done" ? '<option value="done">Mark done</option>' : ""}
+      <option value="text">Change wording</option>
       <option value="due">Change due date</option>
       <option value="delete">Delete</option>
     </select></div>`;
@@ -379,6 +380,7 @@ function drawTodo(client) {
     else el.onchange = async () => {
       const v = el.value; el.value = "";
       if (v === "delete") { if (confirm("Delete this to-do?")) await deleteDoc(ref); }
+      else if (v === "text") { const t2 = prompt("Change the wording:", t.text); if (t2 !== null && t2.trim()) await updateDoc(ref, { text: t2.trim() }); }
       else if (v === "due") { const d = prompt("New due date (like 2026-12-04). Leave blank for none.", t.due || ""); if (d !== null) await updateDoc(ref, { due: /^\d{4}-\d{2}-\d{2}$/.test(d.trim()) ? d.trim() : null }); }
       else if (v === "done") await updateDoc(ref, { status: "done", doneAt: Date.now() });
       else if (v) await updateDoc(ref, { status: v, doneAt: null });
@@ -481,7 +483,8 @@ function whoChip(it) {
 }
 function drawStaffing(client) {
   if (!sched.current.length && !sched.sdp.length) {
-    $("page").innerHTML = `<div class="card"><p class="muted">No schedule yet. ${me.admin ? "Ask Claude for this client's import." : ""}</p></div>`; return;
+    $("page").innerHTML = `<div class="card"><p class="muted">No schedule yet. Add one on the Schedule page.</p></div>` + editBtn("ed-staff", "Edit staff");
+    $("ed-staff").onclick = () => { edStaff = null; staffEditor(client); }; return;
   }
   const now = blocksNow();
   const day = new Date(); day.setDate(day.getDate() + staffDay);
@@ -515,6 +518,8 @@ function drawStaffing(client) {
         ${s.offTime ? `<div class="small"><span class="muted">Off:</span> ${esc(s.offTime)}</div>` : ""}</div></div>`).join("") || `<p class="muted">No staff added yet.</p>`}
       <p class="hint" style="margin-top:12px">Rules: no one works more than 8 hours a day, 40 hours a week, or 7 days in a row.</p>
     </div>`;
+  $("page").insertAdjacentHTML("beforeend", editBtn("ed-staff", "Edit staff"));
+  $("ed-staff").onclick = () => { edStaff = null; staffEditor(client); };
   $("page").querySelectorAll("[data-day]").forEach((b) => (b.onclick = () => { staffDay = +b.dataset.day; drawStaffing(client); }));
 }
 
@@ -552,7 +557,7 @@ function gridHTML(days) {
     <div class="legend"><span class="who staff">Staff</span><span class="who you">Adria</span><span class="who prog">Program</span><span class="who gap">Not covered</span></div>`;
 }
 function drawSchedule(client) {
-  if (!sched.current.length && !sched.sdp.length) { $("page").innerHTML = `<div class="card"><p class="muted">No schedule yet.</p></div>`; return; }
+  if (!sched.current.length && !sched.sdp.length) { $("page").innerHTML = `<div class="card"><p class="muted">No schedule yet.</p></div>` + editBtn("ed-sched", "Add a schedule"); $("ed-sched").onclick = () => { edPlan = "current"; edItem = -1; scheduleEditor(client); }; return; }
   const ws = weekStart(schedWeek);
   const days = Array.from({ length: 7 }, (_, i) => { const d = new Date(ws); d.setDate(d.getDate() + i); return d; });
   const fmt = (d) => d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
@@ -573,6 +578,8 @@ function drawSchedule(client) {
           <div class="block-main"><b>${esc(blockTitle(it, d))}</b>${pickNote(it, d) ? `<div class="muted small">${esc(pickNote(it, d))}</div>` : ""}${planHTML(planOn(it, d))}
           ${(it.tasks || []).length ? `<ul class="tasks">${it.tasks.map((t) => `<li><span class="muted">${fmtHM(t.s)}–${fmtHM(t.e)}</span> ${esc(t.t)}${t.sb ? ` <span class="muted">· ${esc(t.sb)}</span>` : ""}</li>`).join("")}</ul>` : ""}</div>
           ${whoChip(it)}</div>`).join("") || `<p class="muted">Nothing scheduled.</p>`}</div>`; }).join("")}`;
+  $("page").insertAdjacentHTML("afterbegin", editBtn("ed-sched", "Edit schedule"));
+  $("ed-sched").onclick = () => { edPlan = schedPlan === "auto" ? null : schedPlan; edItem = null; scheduleEditor(client); };
   $("page").querySelectorAll("[data-wk]").forEach((b) => (b.onclick = () => { schedWeek += +b.dataset.wk; drawSchedule(client); }));
   $("page").querySelectorAll("[data-plan]").forEach((b) => (b.onclick = () => { schedPlan = b.dataset.plan; drawSchedule(client); }));
   $("grid-box").ontoggle = (e) => { if (e.target.open !== gridOpen) { gridOpen = e.target.open; drawSchedule(client); } };
@@ -585,7 +592,7 @@ async function renderGoals(client) {
   $("page").innerHTML = `<p class="muted">Loading…</p>`;
   try { const g = await getDoc(doc(db, "clients", client.id, "info", "goals")); goals = g.exists() ? g.data() : null; }
   catch (e) { $("page").innerHTML = `<div class="card"><p class="error">Couldn't load goals. Check your connection.</p></div>`; return; }
-  if (!goals) { $("page").innerHTML = `<div class="card"><p class="muted">No goals added yet.</p></div>`; return; }
+  if (!goals) { $("page").innerHTML = `<div class="card"><p class="muted">No goals added yet.</p></div>` + editBtn("ed-goals", "Add goals and skills"); $("ed-goals").onclick = () => goalsEditor(client); return; }
   LEVELS = [["own", goals.ownLabel || "On his own"], ["help", "With help"], ["not", "Not today"]];
   draft = { date: dateKey(new Date()), ratings: {}, note: "" }; openSkill = null;
   unsub = onSnapshot(collection(db, "clients", client.id, "logs"), (snap) => {
@@ -646,6 +653,8 @@ function drawGoals(client) {
         ${l.note ? `<p class="small">${esc(l.note)}</p>` : ""}</div>`).join("") || `<p class="muted">No shift notes yet.</p>`}</details>
     </div>`;
   const P = $("page");
+  P.insertAdjacentHTML("beforeend", editBtn("ed-goals", "Edit goals and skills"));
+  $("ed-goals").onclick = () => goalsEditor(client);
   $("log-date").onchange = (e) => (draft.date = e.target.value);
   $("log-note").oninput = (e) => (draft.note = e.target.value);
   P.querySelectorAll("[data-open]").forEach((b) => (b.onclick = () => { openSkill = openSkill === b.dataset.open ? null : b.dataset.open; drawGoals(client); }));
@@ -693,13 +702,210 @@ async function renderServices(client) {
         <div class="lab">Used for</div><div class="muted">${esc(s.blocks.join(", "))}</div>
       </div></div>`;
   }).join("");
-  $("page").innerHTML = cards || `<div class="card"><p class="muted">No services added yet.</p></div>`;
+  $("page").innerHTML = editBtn("ed-svc", "Edit services") + (cards || `<div class="card"><p class="muted">No services added yet.</p></div>`);
+  $("ed-svc").onclick = () => { edSvc = null; servicesEditor(client); };
 }
 // Turn emails and phone numbers into tappable links
 function linkify(text) {
   return esc(text)
     .replace(/([\w.+-]+@[\w-]+\.[\w.]+)/g, '<a href="mailto:$1">$1</a>')
     .replace(/(\(?\d{3}\)?[\s-]\d{3}-\d{4})/g, (m) => `<a href="tel:${m.replace(/\D/g, "")}">${m}</a>`);
+}
+
+
+// =====================================================================
+// Editing (Adria, and each supervisor for their own client)
+// =====================================================================
+const editBtn = (id, label) => `<button class="btn edit-btn" id="${id}" type="button">✏️ ${label}</button>`;
+const val = (id) => ($(id) ? $(id).value.trim() : "");
+const lines = (t) => String(t || "").split("\n").map((x) => x.trim()).filter(Boolean);
+const newId = (p) => p + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
+function backBar(title, onDone) {
+  return `<div class="card edit-head"><h2>${esc(title)}</h2><p class="hint">Changes save right away for everyone.</p><button class="btn primary" id="ed-done" type="button">Done editing</button></div>`;
+}
+function wireDone(onDone) { $("ed-done").onclick = onDone; }
+function dayChecks(name, sel) { return `<div class="checks">${[1, 2, 3, 4, 5, 6, 0].map((d) => `<label class="pick"><input type="checkbox" name="${name}" value="${d}" ${(sel || []).includes(d) ? "checked" : ""}> ${DAYS[d].slice(0, 3)}</label>`).join("")}</div>`; }
+function weekChecks(name, sel) { return `<div class="checks">${[1, 2, 3, 4, 5].map((w) => `<label class="pick"><input type="checkbox" name="${name}" value="${w}" ${!sel || sel.includes(w) ? "checked" : ""}> Week ${w}</label>`).join("")}</div>`; }
+const checked = (name) => [...document.querySelectorAll(`input[name="${name}"]:checked`)].map((x) => +x.value);
+
+// ---------- Schedule editor ----------
+let edPlan = null, edItem = null; // edItem: null or index (-1 = new)
+async function scheduleEditor(client) {
+  stopLive();
+  if (!edPlan) edPlan = planFor(new Date());
+  const ref = doc(db, "clients", client.id, "schedule", edPlan);
+  const snap = await getDoc(ref); const items = (snap.exists() && snap.data().items) || [];
+  const order = [1, 2, 3, 4, 5, 6, 0];
+  const sorted = items.map((it, i) => ({ it, i })).sort((a, b) => order.indexOf((a.it.d || [0])[0]) - order.indexOf((b.it.d || [0])[0]) || (a.it.s ? mins(a.it.s) : -1) - (b.it.s ? mins(b.it.s) : -1));
+  const f = edItem === null ? null : edItem >= 0 ? items[edItem] : { d: [], s: "09:00", e: "10:00", t: "", sb: "", cover: "" };
+  const coverWho = f ? (String(f.cover || "").includes("·") ? f.cover.split("·")[1].trim() : f.byWho || f.who || "") : "";
+  const coverSvc = f ? (String(f.cover || "").includes("·") ? f.cover.split("·")[0].trim() : f.cover || "") : "";
+  $("page").innerHTML = backBar("Edit schedule") + `
+    <div class="card">
+      <div class="days">${[["current", "Current"], ["sdp", "SDP plan"]].map(([k, l]) => `<button class="day" aria-pressed="${edPlan === k}" data-edplan="${k}">${l}</button>`).join("")}</div>
+      <form id="sw-form" class="add-row"><label class="due-label">SDP plan starts <input id="sw-date" type="date" value="${esc(sched.switchDate || "")}"></label><button class="btn small" type="submit">Save</button></form>
+      <div id="sw-msg" class="small" role="status"></div>
+    </div>
+    <div class="card">
+      ${f ? `<form id="it-form" class="edit-form">
+        <h3>${edItem >= 0 ? "Change this block" : "Add a block"}</h3>
+        <label for="it-t">What</label><input id="it-t" required value="${esc(f.t)}" placeholder="Personal assistance">
+        <label for="it-sb">Notes (optional)</label><input id="it-sb" value="${esc(f.sb || "")}">
+        <label>Day</label>${dayChecks("it-d", f.d)}
+        <div class="add-row"><label class="due-label">From <input id="it-s" type="time" value="${esc(f.s || "")}"></label><label class="due-label">To <input id="it-e" type="time" value="${esc(f.e === "24:00" ? "23:59" : f.e || "")}"></label></div>
+        <p class="hint">An overnight block can end the next morning (like 11pm to 7am).</p>
+        <label>Which weeks of the month</label>${weekChecks("it-w", f.w)}
+        <label for="it-svc">Service (optional)</label><input id="it-svc" value="${esc(coverSvc)}" placeholder="PA, ILS, Respite…">
+        <label for="it-who">Who covers it</label><input id="it-who" value="${esc(coverWho)}" placeholder="Loren, Jay, Adria…">
+        <label class="pick" style="margin-top:10px"><input type="checkbox" id="it-open" ${f.open ? "checked" : ""}> Not covered yet (show it in red)</label>
+        <div class="add-row"><button class="btn" type="button" id="it-cancel">Cancel</button><button class="btn primary" type="submit">Save</button></div>
+        <div id="it-msg" class="small error" role="status"></div>
+      </form>` : `<button class="btn primary" id="it-add" type="button">+ Add a block</button>`}
+      <div class="edit-list">${sorted.map(({ it, i }) => `<div class="block-row${it.open ? " is-gap" : ""}"><div class="block-main"><b>${esc(it.t)}</b>
+        <div class="muted small">${(it.d || []).map((d) => DAYS[d].slice(0, 3)).join(", ")} · ${timeRange(it) || "any time"}${it.w ? " · week " + it.w.join(", ") : ""}${it.cover ? " · " + esc(it.cover) : ""}</div></div>
+        <button class="link" data-ed="${i}">Change</button><button class="link del" data-edel="${i}">Delete</button></div>`).join("")}</div>
+    </div>`;
+  const again = () => scheduleEditor(client);
+  wireDone(() => { edPlan = null; edItem = null; renderSchedule(client); });
+  $("page").querySelectorAll("[data-edplan]").forEach((b) => (b.onclick = () => { edPlan = b.dataset.edplan; edItem = null; again(); }));
+  $("sw-form").onsubmit = async (e) => { e.preventDefault(); await setDoc(doc(db, "clients", client.id), { switchDate: $("sw-date").value || null }, { merge: true }); sched.switchDate = $("sw-date").value || null; $("sw-msg").textContent = "Saved ✓"; $("sw-msg").className = "small ok"; };
+  if ($("it-add")) $("it-add").onclick = () => { edItem = -1; again(); };
+  $("page").querySelectorAll("[data-ed]").forEach((b) => (b.onclick = () => { edItem = +b.dataset.ed; again(); window.scrollTo({ top: 0, behavior: "smooth" }); }));
+  $("page").querySelectorAll("[data-edel]").forEach((b) => (b.onclick = async () => { const it = items[+b.dataset.edel]; if (!confirm(`Delete "${it.t}"?`)) return; await setDoc(ref, { items: items.filter((_, j) => j !== +b.dataset.edel) }); edItem = null; again(); }));
+  if (f) {
+    $("it-cancel").onclick = () => { edItem = null; again(); };
+    $("it-form").onsubmit = async (e) => {
+      e.preventDefault();
+      const d = checked("it-d"), w = checked("it-w");
+      if (!d.length) return ($("it-msg").textContent = "Pick at least one day.");
+      if (!w.length) return ($("it-msg").textContent = "Pick at least one week.");
+      const st = val("it-s"), en0 = val("it-e"), en = en0 === "23:59" ? "24:00" : en0;
+      const svc = val("it-svc"), who = val("it-who"), open = $("it-open").checked;
+      const item = { ...f, d, t: val("it-t"), sb: val("it-sb"), s: st, e: en, open };
+      delete item.byWho; delete item.who;
+      item.cover = svc && who ? `${svc} · ${who}` : svc || who || "";
+      if (open && who) item.byWho = who;
+      if (w.length === 5) { delete item.w; delete item.wk; } else { item.w = w; if (d.some((x) => [0, 5, 6].includes(x))) item.wk = "weekend"; }
+      if (!item.sb) delete item.sb;
+      const next = items.slice(); if (edItem >= 0) next[edItem] = item; else next.push(item);
+      try { await setDoc(ref, { items: next }); edItem = null; again(); } catch (err) { $("it-msg").textContent = "Didn't save. Check your connection."; }
+    };
+  }
+}
+
+// ---------- Staff editor ----------
+let edStaff = null; // null, id, or "new"
+async function staffEditor(client) {
+  stopLive();
+  const snap = await getDocs(collection(db, "clients", client.id, "staff"));
+  const staff = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+  const f = edStaff === null ? null : edStaff === "new" ? { name: "", contact: "", agencies: [], hours: {}, target: "", offTime: "" } : staff.find((s) => s.id === edStaff);
+  $("page").innerHTML = backBar("Edit staff") + `<div class="card">
+    ${f ? `<form id="st-form" class="edit-form"><h3>${edStaff === "new" ? "Add someone" : "Change " + esc(f.name)}</h3>
+      <label for="st-name">Name</label><input id="st-name" required value="${esc(f.name)}">
+      <label for="st-contact">Email or phone</label><input id="st-contact" value="${esc(f.contact || "")}">
+      <label for="st-ag">Agency (who they work through)</label><input id="st-ag" value="${esc((f.agencies || []).join(", "))}" placeholder="Wood Quality Care">
+      <label for="st-hours">Hours, one per line (like "Personal assistance: 7pm–11pm Mon–Fri")</label>
+      <textarea id="st-hours" rows="4">${esc(Object.entries(f.hours || {}).map(([k, v]) => k + ": " + v).join("\n"))}</textarea>
+      <label for="st-target">Hours goal (optional)</label><input id="st-target" value="${esc(f.target || "")}" placeholder="24 hrs a week">
+      <label for="st-off">When they're off (optional)</label><input id="st-off" value="${esc(f.offTime || "")}">
+      <div class="add-row"><button class="btn" type="button" id="st-cancel">Cancel</button><button class="btn primary" type="submit">Save</button></div>
+    </form>` : `<button class="btn primary" id="st-add" type="button">+ Add someone</button>`}
+    <div class="edit-list">${staff.map((s) => `<div class="block-row"><div class="block-main"><b>${esc(s.name)}</b><div class="muted small">${esc((s.agencies || []).join(", "))}</div></div>
+      <button class="link" data-st="${esc(s.id)}">Change</button><button class="link del" data-stdel="${esc(s.id)}">Remove</button></div>`).join("") || `<p class="muted">No staff yet.</p>`}</div></div>`;
+  const again = () => staffEditor(client);
+  wireDone(() => { edStaff = null; renderStaffing(client); });
+  if ($("st-add")) $("st-add").onclick = () => { edStaff = "new"; again(); };
+  $("page").querySelectorAll("[data-st]").forEach((b) => (b.onclick = () => { edStaff = b.dataset.st; again(); window.scrollTo({ top: 0, behavior: "smooth" }); }));
+  $("page").querySelectorAll("[data-stdel]").forEach((b) => (b.onclick = async () => { const s = staff.find((x) => x.id === b.dataset.stdel); if (!confirm(`Remove ${s.name}?`)) return; await deleteDoc(doc(db, "clients", client.id, "staff", s.id)); again(); }));
+  if (f) {
+    $("st-cancel").onclick = () => { edStaff = null; again(); };
+    $("st-form").onsubmit = async (e) => {
+      e.preventDefault();
+      const hours = {}; lines($("st-hours").value).forEach((l) => { const i = l.indexOf(":"); if (i > 0) hours[l.slice(0, i).trim()] = l.slice(i + 1).trim(); else hours["Hours"] = l; });
+      const id = edStaff === "new" ? newId("s") : edStaff;
+      await setDoc(doc(db, "clients", client.id, "staff", id), { id, name: val("st-name"), contact: val("st-contact"), agencies: val("st-ag").split(",").map((x) => x.trim()).filter(Boolean), hours, target: val("st-target"), offTime: val("st-off") });
+      edStaff = null; again();
+    };
+  }
+}
+
+// ---------- Goals editor ----------
+async function goalsEditor(client) {
+  stopLive();
+  const ref = doc(db, "clients", client.id, "info", "goals");
+  const snap = await getDoc(ref); const g = snap.exists() ? snap.data() : { focus: "", groups: [{ g: "Skills", items: [] }] };
+  const groups = (g.groups || []).map((x) => ({ ...x, items: (x.items || []).slice() }));
+  $("page").innerHTML = backBar("Edit goals") + `<form id="g-form">
+    <div class="card"><label for="g-focus">Focus</label><textarea id="g-focus" rows="3">${esc(g.focus || "")}</textarea>
+      <label for="g-work">Work goal (optional)</label><textarea id="g-work" rows="3">${esc((g.work && g.work.goal) || "")}</textarea>
+      <label for="g-places">Places to look, one per line (optional)</label><textarea id="g-places" rows="3">${esc(((g.work && g.work.places) || []).join("\n"))}</textarea>
+      <label for="g-own">Wording for doing it alone</label><input id="g-own" value="${esc(g.ownLabel || "On his own")}"></div>
+    ${groups.map((grp, gi) => `<div class="card"><label for="gg-${gi}">Section name</label><input id="gg-${gi}" value="${esc(grp.g)}">
+      ${grp.items.map((it, ii) => `<div class="skill-edit"><input data-sk="${gi}-${ii}" value="${esc(it.t)}" aria-label="Skill"><input data-skn="${gi}-${ii}" value="${esc(it.note || "")}" placeholder="Note (optional)" aria-label="Note"><label class="pick small"><input type="checkbox" data-skdel="${gi}-${ii}"> Remove</label></div>`).join("")}
+      <label for="gadd-${gi}">Add skills, one per line</label><textarea id="gadd-${gi}" rows="2"></textarea></div>`).join("")}
+    <div class="card"><label for="g-newgroup">Add a new section (optional)</label><input id="g-newgroup" placeholder="Section name"></div>
+    <button class="btn primary" type="submit">Save goals</button><div id="g-msg" class="small" role="status"></div></form>`;
+  wireDone(() => renderGoals(client));
+  $("g-form").onsubmit = async (e) => {
+    e.preventDefault();
+    const out = groups.map((grp, gi) => {
+      const items = grp.items.map((it, ii) => ({ ...it, t: document.querySelector(`[data-sk="${gi}-${ii}"]`).value.trim(), note: document.querySelector(`[data-skn="${gi}-${ii}"]`).value.trim(), _del: document.querySelector(`[data-skdel="${gi}-${ii}"]`).checked }))
+        .filter((it) => !it._del && it.t).map(({ _del, ...it }) => it);
+      lines($("gadd-" + gi).value).forEach((t) => items.push({ id: newId("k"), t }));
+      return { ...grp, g: val("gg-" + gi) || grp.g, items };
+    });
+    if (val("g-newgroup")) out.push({ g: val("g-newgroup"), items: [] });
+    const work = val("g-work") || lines($("g-places").value).length ? { goal: val("g-work"), places: lines($("g-places").value) } : null;
+    const next = { ...g, focus: val("g-focus"), groups: out, ownLabel: val("g-own") || "On his own" };
+    if (work) next.work = work; else delete next.work;
+    try { await setDoc(ref, next); $("g-msg").textContent = "Saved ✓"; $("g-msg").className = "small ok"; goalsEditor(client); }
+    catch (err) { $("g-msg").textContent = "Didn't save. Check your connection."; $("g-msg").className = "small error"; }
+  };
+}
+
+// ---------- Services editor ----------
+let edSvc = null; // null, key, or "\u0000new"
+async function servicesEditor(client) {
+  stopLive();
+  const ref = doc(db, "clients", client.id, "info", "services");
+  const snap = await getDoc(ref); const list = (snap.exists() && snap.data().list) || {};
+  const isNew = edSvc === "\u0000new", f = edSvc === null ? null : isNew ? { service: "", by: null, through: null, vendor: "", auth: "", staff: [] } : list[edSvc];
+  const o = (x) => (x && typeof x === "object" ? x : { name: "", sub: "" });
+  $("page").innerHTML = backBar("Edit services") + `<div class="card">
+    ${f ? `<form id="sv-form" class="edit-form"><h3>${isNew ? "Add a service" : "Change " + esc(edSvc)}</h3>
+      <label for="sv-key">Schedule block it covers</label><input id="sv-key" required value="${esc(isNew ? "" : edSvc)}" placeholder="Personal assistance">
+      <label for="sv-service">Service</label><input id="sv-service" required value="${esc(f.service || "")}" placeholder="Personal Assistance (PA)">
+      <label for="sv-auth">Authorized hours (leave blank if not authorized yet)</label><input id="sv-auth" value="${esc(f.auth || "")}" placeholder="56 hrs/month">
+      <label for="sv-by">Paid by</label><input id="sv-by" value="${esc(o(f.by).name)}" placeholder="North LA County Regional Center">
+      <label for="sv-bysub">Their contact (optional)</label><input id="sv-bysub" value="${esc(o(f.by).sub || "")}">
+      <label for="sv-th">Through (agency)</label><input id="sv-th" value="${esc(f.through === "none" ? "none" : o(f.through).name)}" placeholder="Wood Quality Care, or none">
+      <label for="sv-thsub">Agency contact (optional)</label><input id="sv-thsub" value="${esc(o(f.through).sub || "")}">
+      <label for="sv-vendor">Vendor # (optional)</label><input id="sv-vendor" value="${esc(f.vendor || "")}">
+      <label for="sv-staff">Provider(s), comma between (optional)</label><input id="sv-staff" value="${esc((f.staff || []).map((x) => x.n).join(", "))}">
+      <div class="add-row"><button class="btn" type="button" id="sv-cancel">Cancel</button><button class="btn primary" type="submit">Save</button></div>
+    </form>` : `<button class="btn primary" id="sv-add" type="button">+ Add a service</button>`}
+    <div class="edit-list">${Object.entries(list).map(([k, s]) => `<div class="block-row"><div class="block-main"><b>${esc(k)}</b><div class="muted small">${esc(s.service || "")}${s.auth ? " · " + esc(s.auth) : ""}</div></div>
+      <button class="link" data-sv="${esc(k)}">Change</button><button class="link del" data-svdel="${esc(k)}">Delete</button></div>`).join("") || `<p class="muted">No services yet.</p>`}</div></div>`;
+  const again = () => servicesEditor(client);
+  wireDone(() => { edSvc = null; renderServices(client); });
+  if ($("sv-add")) $("sv-add").onclick = () => { edSvc = "\u0000new"; again(); };
+  $("page").querySelectorAll("[data-sv]").forEach((b) => (b.onclick = () => { edSvc = b.dataset.sv; again(); window.scrollTo({ top: 0, behavior: "smooth" }); }));
+  $("page").querySelectorAll("[data-svdel]").forEach((b) => (b.onclick = async () => { if (!confirm(`Delete "${b.dataset.svdel}"?`)) return; const n = { ...list }; delete n[b.dataset.svdel]; await setDoc(ref, { list: n }); again(); }));
+  if (f) {
+    $("sv-cancel").onclick = () => { edSvc = null; again(); };
+    $("sv-form").onsubmit = async (e) => {
+      e.preventDefault();
+      const th = val("sv-th");
+      const item = { service: val("sv-service"), auth: val("sv-auth") || "Not authorized yet",
+        by: val("sv-by") ? { name: val("sv-by"), sub: val("sv-bysub") } : null,
+        through: /^none$/i.test(th) ? "none" : th ? { name: th, sub: val("sv-thsub") } : null,
+        staff: val("sv-staff").split(",").map((x) => x.trim()).filter(Boolean).map((n) => ({ n })) };
+      if (val("sv-vendor")) item.vendor = val("sv-vendor");
+      const n = { ...list }; if (!isNew && edSvc !== val("sv-key")) delete n[edSvc]; n[val("sv-key")] = item;
+      await setDoc(ref, { list: n }); edSvc = null; again();
+    };
+  }
 }
 
 // ---------------- Import (Adria only) ----------------

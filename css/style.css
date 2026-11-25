@@ -238,3 +238,8 @@ textarea { width: 100%; padding: 10px 14px; font: inherit; font-size: .9rem; col
 .edit-list .link { flex: none; font-size: .9rem; }
 #sup-done { margin-top: 6px; }
 #access-tab { width: 100%; min-height: 46px; font: inherit; border: 1px solid var(--line); border-radius: 12px; background: #fbfcfe; padding: 8px 12px; }
+.edit-btn { margin-top: 4px; }
+.edit-head .btn { margin-top: 8px; }
+.skill-edit { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; align-items: center; padding: 8px 0; border-top: 1px solid var(--line); }
+.skill-edit input { min-height: 42px; }
+@media (max-width: 560px) { .skill-edit { grid-template-columns: 1fr; } }
