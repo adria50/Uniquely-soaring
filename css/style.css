@@ -278,3 +278,4 @@ textarea { width: 100%; padding: 10px 14px; font: inherit; font-size: .9rem; col
 .p-row.over > span:first-child { color: var(--error); font-weight: 600; }
 .stuck-card { border: 2px solid #f1c2bc; }
 .day[disabled] { opacity: .35; }
+.draft-card { border: 2px dashed #c9d6ec; }

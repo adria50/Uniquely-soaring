@@ -606,7 +606,20 @@ function curCheckpoint(g) { return sortedSteps(g).find((x) => !x.metAt) || null;
 function cpAt(g, date) { return sortedSteps(g).find((x) => !x.metAt || x.metAt >= date) || null; }
 // Baseline: the first month, any help counts as ＋. Adria sets the help level after.
 const inBase = (g, k = todayKey()) => !!g.baseEnd && k < g.baseEnd;
-const needsLevel = (g) => { const cp = curCheckpoint(g); return !inBase(g) && !!cp && !cp.prompt; };
+const needsLevel = (g) => { if (g.draft) return false; const cp = curCheckpoint(g); return !inBase(g) && !!cp && !cp.prompt; };
+// A draft is a goal Adria hasn't approved yet. Staff don't log on it. Approving starts the baseline month that day.
+const approveGoal = (g) => { const start = todayKey(), baseEnd = addMonths(start, 1);
+  return { ...g, draft: false, start, baseEnd, steps: (g.steps || []).map((x, i) => ({ ...x, by: addMonths(baseEnd, 3 * (i + 1)) })) }; };
+// Starting drafts for Edward: one goal for each part of his week. Adria changes or approves them.
+const DRAFTS = {
+  EdW: [
+    ["Mornings with Loren", "Makes his own lunch (like a sandwich or wrap) by following the steps", "Loren", "Each step = 1 trial"],
+    ["Evenings with Jay", "Helps make dinner by doing the cooking step Jay gives him (wash, measure, stir, set the table)", "Jay", "Each step = 1 trial"],
+    ["Basketball", "Says hi to a coach or teammate when he arrives, and bye when he leaves", "Basketball staff", "Each hello or goodbye = 1 trial"],
+    ["Outings", "Pays for his own item: hands over the money or card, then waits for change or the receipt", "Whoever is with him", "Each purchase = 1 trial"],
+    ["Job training", "Checks in a device: reads its label and plugs it into the matching charging spot", "Job coach", "Each device = 1 trial"]
+  ].map(([area, t, who, note], i) => ({ id: "gd" + i + "e", draft: true, area, t, who, note, start: null, steps: [1, 2, 3, 4].map(() => ({ by: "", pct: 80, prompt: "" })) }))
+};
 // ＋ and total trials for a goal. A ＋ only counts if the help was at the allowed level or less
 // (during baseline, or before the level is set, any help counts). strict = judge everything by checkpoint cp.
 function tally(g, cp, o = {}) {
@@ -637,7 +650,7 @@ function g2Stat(g) {
 // Stuck = past baseline 30+ days, no checkpoint met in the last 30 days, and the % didn't go up
 // (both 30-day stretches judged by today's help level).
 function isStuck(g, end = todayKey()) {
-  const cp = curCheckpoint(g); if (!cp || !cp.prompt) return false;
+  const cp = curCheckpoint(g); if (g.draft || !cp || !cp.prompt) return false;
   const since = g.baseEnd || g.start; if (!since || addDays(since, 30) > end) return false;
   const a = addDays(end, -30), b = addDays(end, -60);
   if ((g.steps || []).some((x) => x.metAt && x.metAt >= a && x.metAt < end)) return false;
@@ -700,6 +713,15 @@ async function adminSweep() {
         await addSupTodo("third", `base-${c.id}-${g.id}`, `${c.id} · ${g.t}: Baseline month is done. Set the prompt level.`);
     } catch (e) {}
   }
+  // Starting drafts (added once; if Adria deletes them they stay gone)
+  for (const [cid, list] of Object.entries(DRAFTS)) {
+    try {
+      const ref = doc(db, "clients", cid, "info", "goals2"), sd = await getDoc(ref);
+      if (sd.exists() && sd.data().draftsAdded) continue;
+      const cur = (sd.exists() && sd.data().goals) || [];
+      await setDoc(ref, { goals: cur.concat(list.filter((d) => !cur.some((g) => g.id === d.id))), draftsAdded: true }, { merge: true });
+    } catch (e) {}
+  }
   for (const [cid, r] of Object.entries(REVIEWS)) {
     try {
       const ref = doc(db, "clients", "SUP", "people", r.tab), sd = await getDoc(ref);
@@ -724,6 +746,13 @@ function drawGoals(client) {
     ${g2.map((g) => goalCard(g)).join("")}
     <div class="row-btns">${editBtn("g2-add", "Add a goal")}${editBtn("ed-goals", "Edit focus and skill list")}${g2.length && REVIEWS[client.id] ? `<button class="btn" id="mk-review" type="button">📊 Monthly review</button>` : ""}${g2.length ? `<button class="btn" id="mk-report2" type="button">📋 Progress report</button>` : ""}</div>`;
   if ($("mk-review")) $("mk-review").onclick = () => { reviewStep = 0; showReview(client); };
+  P.querySelectorAll("[data-approve]").forEach((b) => (b.onclick = async () => {
+    const g = g2.find((x) => x.id === b.dataset.approve);
+    if (!confirm(`Approve "${g.t}"? The baseline month starts today.`)) return;
+    const next = g2.map((x) => (x.id === g.id ? approveGoal(x) : x));
+    try { await setDoc(doc(db, "clients", client.id, "info", "goals2"), { goals: next }, { merge: true }); g2 = next; drawGoals(client); }
+    catch (e) { alert("Didn't save. Check your connection and try again."); }
+  }));
   P.querySelectorAll("[data-setlevel]").forEach((b) => (b.onclick = () => { g2Edit = { i: g2.findIndex((g) => g.id === b.dataset.setlevel) }; goal2Editor(client); }));
   $("ed-goals").onclick = () => goalsEditor(client);
   $("g2-add").onclick = () => { g2Edit = { i: -1 }; goal2Editor(client); };
@@ -746,6 +775,12 @@ function drawGoals(client) {
   }));
 }
 function goalCard(g) {
+  if (g.draft) return `<div class="card goal2 draft-card">
+    <div class="svc-top"><h2 style="font-size:1.05rem">${esc(g.t)}</h2><span class="who prog">Draft</span></div>
+    <p class="small" style="margin:0 0 4px">${g.area ? `<b>${esc(g.area)}</b> · ` : ""}${g.who ? "Who: " + esc(g.who) : ""}${g.note ? " · " + esc(g.note) : ""}</p>
+    <p class="small muted" style="margin:0 0 8px">Draft for Adria to look over. Staff don't log on it yet. Approving starts the baseline month that day.</p>
+    ${me.admin ? `<div class="add-row"><button class="btn small" data-gedit="${esc(g.id)}" type="button">Change</button><button class="btn primary small" data-approve="${esc(g.id)}" type="button">Approve and start baseline</button></div>` : ""}
+  </div>`;
   const s = g2Stat(g), cp = s.cp, st = tapState[g.id] || { taps: [], p: "ind" };
   const plus = st.taps.filter((t) => t.r === "+").length, n = st.taps.length;
   const doneAll = !cp;
@@ -785,8 +820,8 @@ function goal2Editor(client) {
   stopLive();
   const skills = ((goals && goals.groups) || []).flatMap((gr) => gr.items.map((it) => ({ ...it, area: gr.g })));
   const isNew = g2Edit.i < 0, g = isNew ? null : g2[g2Edit.i];
-  const start = g ? g.start : todayKey();
-  const hasBase = g ? !!g.baseEnd : true, baseEnd = g && g.baseEnd ? g.baseEnd : addMonths(start, 1);
+  const start = (g && g.start) || todayKey();
+  const hasBase = g ? !!g.baseEnd || !!g.draft : true, baseEnd = g && g.baseEnd ? g.baseEnd : addMonths(start, 1);
   const DEF_P = ["mod", "ver", "ges", "ind"];
   // New goals start with a baseline month; checkpoints count from the end of it, prompt level set after
   const steps = g ? g.steps : [3, 6, 9, 12].map((m) => ({ by: addMonths(baseEnd, m), pct: 80, prompt: "" }));
@@ -827,6 +862,7 @@ function goal2Editor(client) {
     const st2 = steps.map((x, i) => ({ ...x, by: document.querySelector(`[data-cpby="${i}"]`).value, pct: +document.querySelector(`[data-cppct="${i}"]`).value || 80, prompt: document.querySelector(`[data-cpp="${i}"]`).value }));
     const item = { ...(g || { id: newId("g") }), t: val("g2-t"), who: val("g2-who"), start: $("g2-start").value || todayKey(), steps: st2 };
     if ($("g2-base").checked) item.baseEnd = $("g2-baseend").value || addMonths(item.start, 1); else delete item.baseEnd;
+    if (item.draft) { item.start = null; delete item.baseEnd; } // dates are set when Adria approves it
     if (sk) { item.skill = sk.id; item.area = sk.area; }
     const next = g2.slice(); if (isNew) next.push(item); else next[g2Edit.i] = item;
     try {
@@ -915,7 +951,7 @@ function showReview(client) {
   stopLive();
   const r = REVIEWS[client.id], p = reviewPeriod(r.n, reviewStep);
   const toLast = addDays(p.to, -1);
-  const items = g2.map((g) => reviewGoal(g, p.from, p.to)).sort((a, b) => b.stuck - a.stuck);
+  const items = g2.filter((g) => !g.draft).map((g) => reviewGoal(g, p.from, p.to)).sort((a, b) => b.stuck - a.stuck);
   const stuckN = items.filter((x) => x.stuck).length;
   const dayTxt = p.day.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" });
   $("page").innerHTML = backBar("Monthly review") + `<div class="card report">
