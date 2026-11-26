@@ -264,3 +264,17 @@ textarea { width: 100%; padding: 10px 14px; font: inherit; font-size: .9rem; col
 .report h3 { margin: 16px 0 4px; font-size: 1rem; } .report p { margin: 3px 0; font-size: .93rem; }
 .report-goal { border-top: 1px solid var(--line); padding-top: 6px; }
 @media (max-width: 520px) { .cp-row { grid-template-columns: 1.2em 1fr 4em auto; } .cp-row select { grid-column: 2 / -1; } }
+/* Monthly review */
+.rv-h { margin: 14px 0 4px; font-size: .92rem; }
+.wk-bars { display: flex; gap: 6px; align-items: flex-end; height: 110px; margin: 6px 0 2px; }
+.wk-bar { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; font-size: .72rem; color: var(--muted); gap: 2px; }
+.wk-bar i { display: block; width: 100%; background: var(--sky); border-radius: 6px 6px 0 0; min-height: 2px; }
+.wk-bar b { color: var(--ink); font-size: .78rem; }
+.p-row { display: grid; grid-template-columns: 8em 1fr 2.5em; gap: 8px; align-items: center; font-size: .88rem; margin: 4px 0; }
+.p-row > span:last-child { text-align: right; }
+.p-row .track { background: #eef2f8; border-radius: 6px; height: 10px; overflow: hidden; }
+.p-row .track i { display: block; height: 100%; background: var(--ok); }
+.p-row.over .track i { background: var(--error); }
+.p-row.over > span:first-child { color: var(--error); font-weight: 600; }
+.stuck-card { border: 2px solid #f1c2bc; }
+.day[disabled] { opacity: .35; }

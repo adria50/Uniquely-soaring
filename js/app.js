@@ -596,26 +596,70 @@ function drawSchedule(client) {
 // Met = 4 of the last 5 days with data at the target or higher. Then the next checkpoint starts.
 const PROMPTS = [["ind", "Independent"], ["ges", "Gestural"], ["ver", "Verbal"], ["mod", "Model"], ["pp", "Partial physical"], ["fp", "Full physical"]];
 const pIdx = (p) => Math.max(0, PROMPTS.findIndex((x) => x[0] === p));
-const pName = (p) => (PROMPTS.find((x) => x[0] === p) || PROMPTS[0])[1];
+const pName = (p) => (p ? (PROMPTS.find((x) => x[0] === p) || PROMPTS[0])[1] : "Not set yet");
 const addMonths = (k, n) => { const [y, m, d] = k.split("-").map(Number); return dateKey(new Date(y, m - 1 + n, d)); };
+const addDays = (k, n) => { const [y, m, d] = k.split("-").map(Number); return dateKey(new Date(y, m - 1, d + n)); };
 let goals = null, g2 = [], sessions = [], tapState = {}, goalOpen = {}, g2Edit = null, reportOpen = null;
-function curCheckpoint(g) {
-  const st = (g.steps || []).slice().sort((a, b) => (a.by < b.by ? -1 : 1));
-  return st.find((x) => !x.metAt) || null; // first one not met yet
-}
-// Daily % for a goal, judged against a checkpoint
-function dayScores(g, cp) {
+const sortedSteps = (g) => (g.steps || []).slice().sort((a, b) => (a.by < b.by ? -1 : 1));
+function curCheckpoint(g) { return sortedSteps(g).find((x) => !x.metAt) || null; } // first one not met yet
+// The checkpoint that was being worked on on a given day
+function cpAt(g, date) { return sortedSteps(g).find((x) => !x.metAt || x.metAt >= date) || null; }
+// Baseline: the first month, any help counts as ＋. Adria sets the help level after.
+const inBase = (g, k = todayKey()) => !!g.baseEnd && k < g.baseEnd;
+const needsLevel = (g) => { const cp = curCheckpoint(g); return !inBase(g) && !!cp && !cp.prompt; };
+// ＋ and total trials for a goal. A ＋ only counts if the help was at the allowed level or less
+// (during baseline, or before the level is set, any help counts). strict = judge everything by checkpoint cp.
+function tally(g, cp, o = {}) {
   const by = {};
-  sessions.filter((s) => s.goal === g.id).forEach((s) => (s.taps || []).forEach((t) => {
+  sessions.filter((s) => s.goal === g.id && (!o.from || s.date >= o.from) && (!o.to || s.date < o.to)).forEach((s) => (s.taps || []).forEach((t) => {
+    const c = o.strict ? cp : o.byDate ? cpAt(g, s.date) : cp;
+    const open = !c || !c.prompt || (!o.strict && g.baseEnd && s.date < g.baseEnd);
     const d = (by[s.date] = by[s.date] || { ok: 0, n: 0 });
-    d.n++; if (t.r === "+" && (!cp || pIdx(t.p) <= pIdx(cp.prompt))) d.ok++;
+    d.n++; if (t.r === "+" && (open || pIdx(t.p) <= pIdx(c.prompt))) d.ok++;
   }));
-  return Object.keys(by).sort().map((k) => ({ date: k, pct: Math.round(by[k].ok / by[k].n * 100), n: by[k].n }));
+  return by;
 }
+function dayScores(g, cp, o) {
+  const by = tally(g, cp, o);
+  return Object.keys(by).sort().map((k) => ({ date: k, pct: Math.round(by[k].ok / by[k].n * 100), n: by[k].n, ok: by[k].ok }));
+}
+const pctOf = (days) => { const n = days.reduce((t, d) => t + d.n, 0); return n ? Math.round(days.reduce((t, d) => t + d.ok, 0) / n * 100) : null; };
 function g2Stat(g) {
-  const cp = curCheckpoint(g), days = dayScores(g, cp), last5 = days.slice(-5);
+  const cp = curCheckpoint(g), base = inBase(g);
+  // Only days after baseline, and after the last checkpoint was met, count toward the next one
+  const lastMet = (g.steps || []).map((x) => x.metAt).filter(Boolean).sort().pop();
+  const from = base ? null : [g.baseEnd, lastMet && addDays(lastMet, 1)].filter(Boolean).sort().pop();
+  const days = dayScores(g, cp, { from }), last5 = days.slice(-5);
   const hit = last5.filter((d) => d.pct >= (cp ? cp.pct : 80)).length;
-  return { cp, days, last5, hit, met: !!cp && last5.length >= 4 && hit >= 4 };
+  const ready = !!cp && !!cp.prompt && !base;
+  return { cp, days, last5, hit, base, needs: needsLevel(g), met: ready && last5.length >= 4 && hit >= 4 };
+}
+// Stuck = past baseline 30+ days, no checkpoint met in the last 30 days, and the % didn't go up
+// (both 30-day stretches judged by today's help level).
+function isStuck(g, end = todayKey()) {
+  const cp = curCheckpoint(g); if (!cp || !cp.prompt) return false;
+  const since = g.baseEnd || g.start; if (!since || addDays(since, 30) > end) return false;
+  const a = addDays(end, -30), b = addDays(end, -60);
+  if ((g.steps || []).some((x) => x.metAt && x.metAt >= a && x.metAt < end)) return false;
+  const now = pctOf(dayScores(g, cp, { from: a, to: end, strict: true }));
+  const before = pctOf(dayScores(g, cp, { from: b > since ? b : since, to: a, strict: true }));
+  if (now == null) return true; // no data at all in 30 days
+  return before != null && now <= before;
+}
+// Who supervises each client, and their monthly data review (nth Friday of the month, 9–9:30am)
+const REVIEWS = {
+  EzW: { n: 1, tab: "dlipscomb", with: "Dee" },
+  AW: { n: 2, tab: "ujourni", with: "Uriayah" },
+  EdW: { n: 3, tab: "third", with: "" }
+};
+const supFor = (cid) => SUP_TABS.find((t) => t.supervises === cid);
+// Add a to-do to a supervisor's list once (same id = never added twice, and a done one stays done)
+async function addSupTodo(tabId, id, text) {
+  try {
+    const ref = doc(db, "clients", "SUP", "people", tabId, "todos", id);
+    if ((await getDoc(ref)).exists()) return;
+    await setDoc(ref, { text, status: "todo", due: todayKey(), doneAt: null, createdAt: serverTimestamp(), createdBy: "site" });
+  } catch (e) {}
 }
 async function renderGoals(client) {
   $("page").innerHTML = `<p class="muted">Loading…</p>`;
@@ -630,10 +674,40 @@ async function renderGoals(client) {
 }
 // When a checkpoint is met, mark it (with the date) so the next one starts
 async function checkMet(client) {
-  let changed = false;
-  g2 = g2.map((g) => { const s = g2Stat(g); if (!s.met) return g; changed = true;
+  const newlyMet = [];
+  g2 = g2.map((g) => { const s = g2Stat(g); if (!s.met) return g;
+    newlyMet.push({ g, cp: s.cp });
     return { ...g, steps: g.steps.map((x) => (x === s.cp ? { ...x, metAt: todayKey() } : x)) }; });
-  if (changed) try { await setDoc(doc(db, "clients", client.id, "info", "goals2"), { goals: g2 }, { merge: true }); } catch (e) {}
+  if (!newlyMet.length) return;
+  try { await setDoc(doc(db, "clients", client.id, "info", "goals2"), { goals: g2 }, { merge: true }); } catch (e) { return; }
+  // Tell the supervisor right away, so staff fade the help now (not at the monthly review)
+  const sup = supFor(client.id); if (!sup) return;
+  for (const { g, cp } of newlyMet) {
+    const next = sortedSteps(g).find((x) => x.by > cp.by);
+    const text = next
+      ? `${client.id} · ${g.t}: Met. Tell staff to fade to the next prompt level${next.prompt ? ` (${pName(next.prompt).toLowerCase()} or less)` : ""}.`
+      : `${client.id} · ${g.t}: Met the last checkpoint. Time to write a new goal.`;
+    await addSupTodo(sup.id, `met-${client.id}-${g.id}-${cp.by}`, text);
+  }
+}
+// Adria only, when she signs in: baseline reminders and the monthly review blocks
+async function adminSweep() {
+  for (const c of me.clients) {
+    if (c.id === "SUP") continue;
+    try {
+      const s = await getDoc(doc(db, "clients", c.id, "info", "goals2"));
+      for (const g of (s.exists() && s.data().goals) || []) if (needsLevel(g))
+        await addSupTodo("third", `base-${c.id}-${g.id}`, `${c.id} · ${g.t}: Baseline month is done. Set the prompt level.`);
+    } catch (e) {}
+  }
+  for (const [cid, r] of Object.entries(REVIEWS)) {
+    try {
+      const ref = doc(db, "clients", "SUP", "people", r.tab), sd = await getDoc(ref);
+      if (sd.exists() && sd.data().reviewAdded) continue;
+      const block = { d: [5], w: [r.n], s: "09:00", e: "09:30", t: `Monthly data review (${cid})`, sb: r.with ? "With Adria" : "On her own", review: true };
+      await setDoc(ref, { schedule: ((sd.exists() && sd.data().schedule) || []).concat([block]), reviewAdded: true }, { merge: true });
+    } catch (e) {}
+  }
 }
 function reportsDue() {
   const t = todayKey(), soon = addMonths(t, 1), out = [];
@@ -648,7 +722,9 @@ function drawGoals(client) {
     ${due.length ? `<div class="card notice"><b>📋 Progress report due ${esc(niceDate(due[0]))}</b><p class="small">The report pulls together each goal's start, where it is now, and the checkpoints met.</p><button class="btn primary" id="mk-report" type="button">Make the report</button></div>` : ""}
     ${g2.length ? "" : `<div class="card"><p class="muted">No goals yet. Tap "Add a goal" below to pick one from the skill list.</p></div>`}
     ${g2.map((g) => goalCard(g)).join("")}
-    <div class="row-btns">${editBtn("g2-add", "Add a goal")}${editBtn("ed-goals", "Edit focus and skill list")}${g2.length ? `<button class="btn" id="mk-report2" type="button">📋 Progress report</button>` : ""}</div>`;
+    <div class="row-btns">${editBtn("g2-add", "Add a goal")}${editBtn("ed-goals", "Edit focus and skill list")}${g2.length && REVIEWS[client.id] ? `<button class="btn" id="mk-review" type="button">📊 Monthly review</button>` : ""}${g2.length ? `<button class="btn" id="mk-report2" type="button">📋 Progress report</button>` : ""}</div>`;
+  if ($("mk-review")) $("mk-review").onclick = () => { reviewStep = 0; showReview(client); };
+  P.querySelectorAll("[data-setlevel]").forEach((b) => (b.onclick = () => { g2Edit = { i: g2.findIndex((g) => g.id === b.dataset.setlevel) }; goal2Editor(client); }));
   $("ed-goals").onclick = () => goalsEditor(client);
   $("g2-add").onclick = () => { g2Edit = { i: -1 }; goal2Editor(client); };
   [$("mk-report"), $("mk-report2")].forEach((b) => b && (b.onclick = () => showReport(client)));
@@ -674,10 +750,21 @@ function goalCard(g) {
   const plus = st.taps.filter((t) => t.r === "+").length, n = st.taps.length;
   const doneAll = !cp;
   const met = (g.steps || []).filter((x) => x.metAt).length;
+  const stuck = !s.base && isStuck(g);
+  const badge = doneAll ? `<span class="who staff">★ All met</span>` : s.base ? `<span class="who prog">Baseline</span>` : s.needs ? `<span class="who gap">Needs prompt level</span>` : stuck ? `<span class="who gap">Stuck</span>` : `<span class="who you">${s.hit} of 4 days</span>`;
+  let line;
+  if (!cp) line = `<p class="small muted">Every checkpoint is met. Time to set a new goal.</p>`;
+  else if (s.base) line = `<p class="small" style="margin:0 0 8px"><b>Baseline month, until ${esc(niceDate(g.baseEnd))}:</b> any help counts as ＋. Still pick the help you gave, so we can see where things stand.</p>`;
+  else if (s.needs) {
+    const bd = dayScores(g, null, { to: g.baseEnd }), used = {};
+    sessions.filter((x) => x.goal === g.id && x.date < g.baseEnd).forEach((x) => (x.taps || []).forEach((t) => (used[t.p] = (used[t.p] || 0) + 1)));
+    const top = Object.entries(used).sort((a, b) => b[1] - a[1])[0];
+    line = `<div class="notice small"><b>Baseline done.</b> ${pctOf(bd) == null ? "No data was logged." : `Baseline: ${pctOf(bd)}% over ${bd.length} days${top ? `, most often with ${esc(pName(top[0]).toLowerCase())} help` : ""}.`} ${me.admin ? `Set the prompt level for each checkpoint.<br><button class="btn primary small" data-setlevel="${esc(g.id)}" type="button" style="margin-top:8px">Set the prompt level</button>` : "Waiting for Adria to set the prompt level. Keep logging."}</div>`;
+  } else line = `<p class="small" style="margin:0 0 8px"><b>Checkpoint ${met + 1} of ${(g.steps || []).length}:</b> ${cp.pct}% by ${esc(niceDate(cp.by))}, with ${esc(pName(cp.prompt).toLowerCase())} help or less</p>`;
   return `<div class="card goal2">
-    <div class="svc-top"><h2 style="font-size:1.05rem">${esc(g.t)}</h2>${doneAll ? `<span class="who staff">★ All met</span>` : `<span class="who you">${s.hit} of 4 days</span>`}</div>
-    ${cp ? `<p class="small" style="margin:0 0 8px"><b>Checkpoint ${met + 1} of ${(g.steps || []).length}:</b> ${cp.pct}% by ${esc(niceDate(cp.by))}, with ${esc(pName(cp.prompt).toLowerCase())} help or less</p>` : `<p class="small muted">Every checkpoint is met. Time to set a new goal.</p>`}
-    <div class="day-chips">${s.last5.map((d) => `<span class="chip ${cp && d.pct >= cp.pct ? "good" : "low"}" title="${d.n} trials">${esc(d.date.slice(5).replace("-", "/"))} · ${d.pct}%</span>`).join("") || `<span class="muted small">No data yet</span>`}</div>
+    <div class="svc-top"><h2 style="font-size:1.05rem">${esc(g.t)}</h2>${badge}</div>
+    ${line}
+    <div class="day-chips">${s.last5.map((d) => `<span class="chip ${s.base || (cp && d.pct >= cp.pct) ? "good" : "low"}" title="${d.n} trials">${esc(d.date.slice(5).replace("-", "/"))} · ${d.pct}%</span>`).join("") || `<span class="muted small">No data yet</span>`}</div>
     ${cp ? `<div class="tapper">
       <label class="small">Help given <select data-prompt="${esc(g.id)}">${PROMPTS.map(([k, l]) => `<option value="${k}" ${st.p === k ? "selected" : ""}>${l}</option>`).join("")}</select></label>
       <div class="tap-row"><button class="tap plus" data-tap="${esc(g.id)}|+" aria-label="Correct">＋</button><button class="tap minus" data-tap="${esc(g.id)}|-" aria-label="Incorrect">－</button>
@@ -686,8 +773,8 @@ function goalCard(g) {
     </div>` : ""}
     <details data-gopen="${esc(g.id)}" ${goalOpen[g.id] ? "open" : ""}><summary class="small link">More about this goal</summary>
       ${g.area ? `<p class="small"><b>Skill area:</b> ${esc(g.area)}</p>` : ""}${g.who ? `<p class="small"><b>Who works on it:</b> ${esc(g.who)}</p>` : ""}
-      <p class="small"><b>Started:</b> ${g.start ? esc(niceDate(g.start)) : "—"}${g.start ? ` · reports due ${esc(niceDate(addMonths(g.start, 6)))} and ${esc(niceDate(addMonths(g.start, 12)))}` : ""}</p>
-      <ul class="tasks">${(g.steps || []).map((x) => `<li><b>${esc(niceDate(x.by))}</b> · ${x.pct}% · ${esc(pName(x.prompt))} or less${x.metAt ? ` · <span class="ok">★ met ${esc(niceDate(x.metAt))}</span>` : ""}</li>`).join("")}</ul>
+      <p class="small"><b>Started:</b> ${g.start ? esc(niceDate(g.start)) : "—"}${g.baseEnd ? ` · baseline until ${esc(niceDate(g.baseEnd))}` : ""}${g.start ? ` · reports due ${esc(niceDate(addMonths(g.start, 6)))} and ${esc(niceDate(addMonths(g.start, 12)))}` : ""}</p>
+      <ul class="tasks">${(g.steps || []).map((x) => `<li><b>${esc(niceDate(x.by))}</b> · ${x.pct}% · ${x.prompt ? esc(pName(x.prompt)) + " or less" : "prompt level not set yet"}${x.metAt ? ` · <span class="ok">★ met ${esc(niceDate(x.metAt))}</span>` : ""}</li>`).join("")}</ul>
       <button class="link" data-gedit="${esc(g.id)}">Change this goal</button>
     </details>
   </div>`;
@@ -699,21 +786,39 @@ function goal2Editor(client) {
   const skills = ((goals && goals.groups) || []).flatMap((gr) => gr.items.map((it) => ({ ...it, area: gr.g })));
   const isNew = g2Edit.i < 0, g = isNew ? null : g2[g2Edit.i];
   const start = g ? g.start : todayKey();
-  const steps = g ? g.steps : [3, 6, 9, 12].map((m) => ({ by: addMonths(start, m), pct: 80, prompt: m <= 3 ? "mod" : m <= 6 ? "ver" : m <= 9 ? "ges" : "ind" }));
+  const hasBase = g ? !!g.baseEnd : true, baseEnd = g && g.baseEnd ? g.baseEnd : addMonths(start, 1);
+  const DEF_P = ["mod", "ver", "ges", "ind"];
+  // New goals start with a baseline month; checkpoints count from the end of it, prompt level set after
+  const steps = g ? g.steps : [3, 6, 9, 12].map((m) => ({ by: addMonths(baseEnd, m), pct: 80, prompt: "" }));
+  const pOpts = (sel) => `<option value="" ${!sel ? "selected" : ""}>Not set yet</option>` + PROMPTS.map(([k, l]) => `<option value="${k}" ${sel === k ? "selected" : ""}>${l}</option>`).join("");
   $("page").innerHTML = backBar(isNew ? "Add a goal" : "Change this goal") + `<form id="g2-form" class="card">
     ${isNew && skills.length ? `<label for="g2-skill">Pick from the skill list</label><select id="g2-skill"><option value="">Choose a skill…</option>${skills.map((s) => `<option value="${esc(s.id)}">${esc(s.area)} · ${esc(s.t)}</option>`).join("")}</select>` : ""}
     <label for="g2-t">The goal, in plain words</label><textarea id="g2-t" rows="2" required placeholder="Makes a grocery list from his menu, on his own">${esc(g ? g.t : "")}</textarea>
     <label for="g2-who">Who works on it (optional)</label><input id="g2-who" value="${esc(g ? g.who || "" : "")}" placeholder="ILS staff, Jay">
     <label for="g2-start">Start date</label><input id="g2-start" type="date" value="${esc(start)}">
+    <label class="pick" style="margin-top:12px"><input type="checkbox" id="g2-base" ${hasBase ? "checked" : ""}> Baseline month first (any help counts as ＋)</label>
+    <div id="g2-base-row" ${hasBase ? "" : "hidden"}><label for="g2-baseend">Baseline ends</label><input id="g2-baseend" type="date" value="${esc(baseEnd)}"></div>
     <h3 style="margin:16px 0 4px">Checkpoints (every 3 months)</h3>
-    <p class="hint">Each one: the % to reach, and the most help allowed. A good plan steps the help down over the year.</p>
-    ${steps.map((x, i) => `<div class="cp-row"><b>${i + 1}</b><input type="date" data-cpby="${i}" value="${esc(x.by)}" aria-label="Checkpoint ${i + 1} date"><input type="number" min="1" max="100" data-cppct="${i}" value="${x.pct}" aria-label="Target %"><span class="small">%</span><select data-cpp="${i}" aria-label="Most help allowed">${PROMPTS.map(([k, l]) => `<option value="${k}" ${x.prompt === k ? "selected" : ""}>${l}</option>`).join("")}</select>${x.metAt ? `<span class="small ok">★</span>` : ""}</div>`).join("")}
+    <p class="hint">Each one: the % to reach, and the most help allowed. Leave the help at "Not set yet" until baseline is done. A good plan steps the help down over the year.</p>
+    ${steps.map((x, i) => `<div class="cp-row"><b>${i + 1}</b><input type="date" data-cpby="${i}" value="${esc(x.by)}" aria-label="Checkpoint ${i + 1} date"><input type="number" min="1" max="100" data-cppct="${i}" value="${x.pct}" aria-label="Target %"><span class="small">%</span><select data-cpp="${i}" aria-label="Most help allowed">${pOpts(x.prompt)}</select>${x.metAt ? `<span class="small ok">★</span>` : ""}</div>`).join("")}
     <div class="add-row" style="margin-top:14px">${isNew ? "" : `<button class="btn" type="button" id="g2-del" style="color:var(--error)">Delete goal</button>`}<button class="btn primary" type="submit">Save</button></div>
     <div id="g2-msg" class="small error" role="status"></div></form>`;
   wireDone(() => { g2Edit = null; renderGoals(client); });
   if ($("g2-skill")) $("g2-skill").onchange = (e) => { const s = skills.find((x) => x.id === e.target.value); if (s && !val("g2-t")) $("g2-t").value = s.t; };
-  // moving the start date moves the checkpoints with it (for a new goal)
-  $("g2-start").onchange = () => { if (!isNew) return; [3, 6, 9, 12].forEach((m, i) => { const el = document.querySelector(`[data-cpby="${i}"]`); if (el) el.value = addMonths($("g2-start").value, m); }); };
+  // moving the start date (or turning baseline on/off) moves the checkpoints with it, for a new goal
+  const moveDates = (fromStart) => {
+    const b = $("g2-base").checked, st0 = $("g2-start").value || todayKey();
+    if (fromStart) $("g2-baseend").value = addMonths(st0, 1);
+    const from = b ? $("g2-baseend").value || addMonths(st0, 1) : st0;
+    if (isNew) [3, 6, 9, 12].forEach((m, i) => { const el = document.querySelector(`[data-cpby="${i}"]`); if (el) el.value = addMonths(from, m); });
+  };
+  $("g2-start").onchange = () => moveDates(true);
+  $("g2-baseend").onchange = () => moveDates(false);
+  $("g2-base").onchange = () => {
+    $("g2-base-row").hidden = !$("g2-base").checked; moveDates(false);
+    // no baseline: start with the usual help levels; baseline: leave them for after
+    if (isNew) DEF_P.forEach((p, i) => { const el = document.querySelector(`[data-cpp="${i}"]`); if (el) el.value = $("g2-base").checked ? "" : p; });
+  };
   if ($("g2-del")) $("g2-del").onclick = async () => { if (!confirm("Delete this goal? Its data stays saved but won't show.")) return; g2 = g2.filter((_, j) => j !== g2Edit.i); await setDoc(doc(db, "clients", client.id, "info", "goals2"), { goals: g2 }); g2Edit = null; renderGoals(client); };
   $("g2-form").onsubmit = async (e) => {
     e.preventDefault();
@@ -721,9 +826,15 @@ function goal2Editor(client) {
     const sk = $("g2-skill") ? skills.find((x) => x.id === $("g2-skill").value) : null;
     const st2 = steps.map((x, i) => ({ ...x, by: document.querySelector(`[data-cpby="${i}"]`).value, pct: +document.querySelector(`[data-cppct="${i}"]`).value || 80, prompt: document.querySelector(`[data-cpp="${i}"]`).value }));
     const item = { ...(g || { id: newId("g") }), t: val("g2-t"), who: val("g2-who"), start: $("g2-start").value || todayKey(), steps: st2 };
+    if ($("g2-base").checked) item.baseEnd = $("g2-baseend").value || addMonths(item.start, 1); else delete item.baseEnd;
     if (sk) { item.skill = sk.id; item.area = sk.area; }
     const next = g2.slice(); if (isNew) next.push(item); else next[g2Edit.i] = item;
-    try { await setDoc(doc(db, "clients", client.id, "info", "goals2"), { goals: next }); g2 = next; g2Edit = null; renderGoals(client); }
+    try {
+      await setDoc(doc(db, "clients", client.id, "info", "goals2"), { goals: next }); g2 = next; g2Edit = null;
+      // prompt level is set now, so the "set the prompt level" reminder is done
+      if (me.admin && item.baseEnd && !needsLevel(item)) updateDoc(doc(db, "clients", "SUP", "people", "third", "todos", `base-${client.id}-${item.id}`), { status: "done", doneAt: Date.now() }).catch(() => {});
+      renderGoals(client);
+    }
     catch (err) { $("g2-msg").textContent = "Didn't save. Check your connection."; }
   };
 }
@@ -745,6 +856,78 @@ function showReport(client) {
   $("page").innerHTML = backBar("Progress report") + `<div class="card report"><h2>${esc(label)} · Progress report</h2><p class="muted">${esc(new Date().toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" }))}</p>${rows || "<p>No goals yet.</p>"}
     <p class="hint">To save or send it: tap Share in Safari, then Print or Save to Files.</p></div>`;
   wireDone(() => renderGoals(client));
+}
+
+// ---------- Monthly data review (30 min, nth Friday, 9–9:30am) ----------
+// Covers the month since that supervisor's last review day. Stuck goals first.
+let reviewStep = 0; // 0 = the next review, -1 = the one before, ...
+function nthFri(y, m, n) { const d = new Date(y, m, 1); d.setDate(1 + ((5 - d.getDay() + 7) % 7) + 7 * (n - 1)); return d; }
+function reviewPeriod(n, step) {
+  const t = new Date(); t.setHours(0, 0, 0, 0);
+  let y = t.getFullYear(), m = t.getMonth();
+  if (nthFri(y, m, n) < t) m++; // this month's review already happened, so the next one is next month
+  m += step;
+  return { day: nthFri(y, m, n), from: dateKey(nthFri(y, m - 1, n)), to: dateKey(nthFri(y, m, n)) };
+}
+function reviewGoal(g, from, to) {
+  const cp = curCheckpoint(g), stuck = isStuck(g, to < todayKey() ? to : todayKey());
+  const days = dayScores(g, cp, { from, to, byDate: true });
+  // trend: week by week through the month
+  const weeks = [];
+  for (let k = from; k < to; k = addDays(k, 7)) { const e = addDays(k, 7) < to ? addDays(k, 7) : to; const w = days.filter((d) => d.date >= k && d.date < e); weeks.push({ k, pct: pctOf(w), n: w.reduce((t, d) => t + d.n, 0) }); }
+  const withData = weeks.filter((w) => w.pct != null);
+  const first = withData[0], last = withData[withData.length - 1];
+  const metHere = (g.steps || []).filter((x) => x.metAt && x.metAt >= from && x.metAt < to);
+  // prompts: what staff used vs. what they should use (the level for that day)
+  const used = {}, staff = {}; let total = 0, right = 0;
+  const levels = new Set();
+  sessions.filter((s) => s.goal === g.id && s.date >= from && s.date < to).forEach((s) => {
+    const c = cpAt(g, s.date), open = inBase(g, s.date) || !c || !c.prompt;
+    if (!open) levels.add(c.prompt);
+    const who = s.byName || s.by || "Someone";
+    staff[who] = staff[who] || { n: 0, right: 0 };
+    (s.taps || []).forEach((t) => {
+      const ok = open || pIdx(t.p) <= pIdx(c.prompt);
+      used[t.p] = used[t.p] || { n: 0, over: 0 }; used[t.p].n++; if (!ok) used[t.p].over++;
+      total++; if (ok) right++; staff[who].n++; if (ok) staff[who].right++;
+    });
+  });
+  const allowed = cp && cp.prompt ? cp.prompt : null;
+  const status = stuck ? ["gap", "Stuck"] : inBase(g, to) ? ["prog", "Baseline"] : needsLevel(g) ? ["gap", "Needs prompt level"] : metHere.length ? ["staff", "★ Met a checkpoint"] : first && last && last.pct > first.pct ? ["staff", "Going up"] : ["you", "Holding steady"];
+  const fmt = (k) => { const [y, m, d] = k.split("-").map(Number); return `${m}/${d}`; };
+  return { stuck, html: `<div class="card goal2${stuck ? " stuck-card" : ""}">
+    <div class="svc-top"><h2 style="font-size:1.05rem">${esc(g.t)}</h2><span class="who ${status[0]}">${status[1]}</span></div>
+    ${stuck ? `<p class="small error" style="margin:0 0 8px">No checkpoint met and no rise in the last 30 days. Talk about what to change.</p>` : ""}
+    <h3 class="rv-h">Trend this month</h3>
+    ${withData.length ? `<div class="wk-bars">${weeks.map((w) => `<div class="wk-bar"><b>${w.pct == null ? "–" : w.pct + "%"}</b><i style="height:${Math.round((w.pct || 0) * 0.7)}px"></i><span>${fmt(w.k)}</span></div>`).join("")}</div>
+      <p class="small" style="margin:4px 0">${first === last ? `${first.pct}% the one week with data.` : `${first.pct}% → ${last.pct}% (${last.pct === first.pct ? "no change" : (last.pct > first.pct ? "up " : "down ") + Math.abs(last.pct - first.pct)})`} · ${days.length} days, ${total} trials${cp ? ` · target ${cp.pct}%` : ""}</p>`
+      : `<p class="small muted">No data this month.</p>`}
+    ${metHere.length ? `<p class="small ok">★ Met: ${metHere.map((x) => `${x.pct}% with ${esc(pName(x.prompt).toLowerCase())} help, on ${esc(niceDate(x.metAt))}`).join("; ")}</p>` : ""}
+    <h3 class="rv-h">Prompts used</h3>
+    <p class="small" style="margin:0 0 6px"><b>Should use:</b> ${inBase(g, to) ? "Baseline: any help is OK." : allowed ? `${esc(pName(allowed))} or less${levels.size > 1 ? ` (changed this month: ${[...levels].map((p) => esc(pName(p).toLowerCase())).join(" → ")})` : ""}` : "Not set yet."}</p>
+    ${total ? PROMPTS.filter(([k]) => used[k]).map(([k, l]) => `<div class="p-row${used[k].over ? " over" : ""}"><span>${l}</span><div class="track"><i style="width:${Math.round(used[k].n / total * 100)}%"></i></div><span>${used[k].n}</span></div>`).join("")
+      + (right < total ? `<p class="small" style="margin:6px 0 0"><b>${Math.round(right / total * 100)}%</b> of trials used the right help or less. Red = more help than allowed.</p>` : `<p class="small ok" style="margin:6px 0 0">Every trial used the right help or less. ✓</p>`)
+      + (Object.keys(staff).length > 1 || right < total ? `<div class="small" style="margin-top:6px">${Object.entries(staff).map(([w, v]) => `<div><b>${esc(w)}</b>: ${v.n} trials · ${Math.round(v.right / v.n * 100)}% right help</div>`).join("")}</div>` : "")
+      : `<p class="small muted">No trials logged.</p>`}
+  </div>` };
+}
+function showReview(client) {
+  stopLive();
+  const r = REVIEWS[client.id], p = reviewPeriod(r.n, reviewStep);
+  const toLast = addDays(p.to, -1);
+  const items = g2.map((g) => reviewGoal(g, p.from, p.to)).sort((a, b) => b.stuck - a.stuck);
+  const stuckN = items.filter((x) => x.stuck).length;
+  const dayTxt = p.day.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" });
+  $("page").innerHTML = backBar("Monthly review") + `<div class="card report">
+      <div class="week-nav"><button class="day" data-rv="-1" aria-label="Earlier review">‹</button><h2>${esc(client.id)} · ${esc(p.day.toLocaleDateString(undefined, { month: "long", year: "numeric" }))}</h2><button class="day" data-rv="1" aria-label="Later review" ${reviewStep >= 0 ? "disabled" : ""}>›</button></div>
+      <p class="small" style="margin:4px 0"><b>${esc(dayTxt)}, 9–9:30am</b> · ${r.with ? "with " + esc(r.with) : "on your own"}</p>
+      <p class="small muted" style="margin:0">Covers ${esc(niceDate(p.from))} – ${esc(niceDate(toLast))}</p>
+      ${stuckN ? `<div class="notice small" style="margin-bottom:0"><b>${stuckN} stuck goal${stuckN > 1 ? "s" : ""}</b>, listed first.</div>` : ""}
+    </div>
+    ${items.map((x) => x.html).join("") || `<div class="card"><p class="muted">No goals yet.</p></div>`}
+    <p class="hint">To save or send it: tap Share in Safari, then Print or Save to Files.</p>`;
+  wireDone(() => renderGoals(client));
+  $("page").querySelectorAll("[data-rv]").forEach((b) => (b.onclick = () => { reviewStep = Math.min(0, reviewStep + +b.dataset.rv); showReview(client); }));
 }
 
 // ---------------- Page 5: Services ----------------
@@ -1141,4 +1324,5 @@ onAuthStateChanged(auth, async (user) => {
   show("loading");
   await loadAccess(user);
   route();
+  if (me.admin) adminSweep();
 });
