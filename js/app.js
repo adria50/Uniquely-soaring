@@ -1,4 +1,4 @@
-import { auth, db } from "./firebase.js?v=21";
+import { auth, db } from "./firebase.js?v=22";
 import {
   GoogleAuthProvider, signInWithPopup, signInWithEmailAndPassword,
   createUserWithEmailAndPassword, sendPasswordResetEmail, onAuthStateChanged, signOut, sendEmailVerification
@@ -591,91 +591,160 @@ function drawSchedule(client) {
 }
 
 // ---------------- Page 4: Goals & progress ----------------
-let LEVELS = [["own", "On his own"], ["help", "With help"], ["not", "Not today"]];
-let goals = null, logs = [], draft = { date: null, ratings: {}, note: "" }, openSkill = null, logsOpen = false;
+// Each goal: start date, a checkpoint every 3 months (target % + most help allowed), a report every 6 months.
+// Staff log trials with ＋/－ and the prompt they used. A ＋ only counts when the prompt was at the allowed level or less.
+// Met = 4 of the last 5 days with data at the target or higher. Then the next checkpoint starts.
+const PROMPTS = [["ind", "Independent"], ["ges", "Gestural"], ["ver", "Verbal"], ["mod", "Model"], ["pp", "Partial physical"], ["fp", "Full physical"]];
+const pIdx = (p) => Math.max(0, PROMPTS.findIndex((x) => x[0] === p));
+const pName = (p) => (PROMPTS.find((x) => x[0] === p) || PROMPTS[0])[1];
+const addMonths = (k, n) => { const [y, m, d] = k.split("-").map(Number); return dateKey(new Date(y, m - 1 + n, d)); };
+let goals = null, g2 = [], sessions = [], tapState = {}, goalOpen = {}, g2Edit = null, reportOpen = null;
+function curCheckpoint(g) {
+  const st = (g.steps || []).slice().sort((a, b) => (a.by < b.by ? -1 : 1));
+  return st.find((x) => !x.metAt) || null; // first one not met yet
+}
+// Daily % for a goal, judged against a checkpoint
+function dayScores(g, cp) {
+  const by = {};
+  sessions.filter((s) => s.goal === g.id).forEach((s) => (s.taps || []).forEach((t) => {
+    const d = (by[s.date] = by[s.date] || { ok: 0, n: 0 });
+    d.n++; if (t.r === "+" && (!cp || pIdx(t.p) <= pIdx(cp.prompt))) d.ok++;
+  }));
+  return Object.keys(by).sort().map((k) => ({ date: k, pct: Math.round(by[k].ok / by[k].n * 100), n: by[k].n }));
+}
+function g2Stat(g) {
+  const cp = curCheckpoint(g), days = dayScores(g, cp), last5 = days.slice(-5);
+  const hit = last5.filter((d) => d.pct >= (cp ? cp.pct : 80)).length;
+  return { cp, days, last5, hit, met: !!cp && last5.length >= 4 && hit >= 4 };
+}
 async function renderGoals(client) {
   $("page").innerHTML = `<p class="muted">Loading…</p>`;
-  try { const g = await getDoc(doc(db, "clients", client.id, "info", "goals")); goals = g.exists() ? g.data() : null; }
-  catch (e) { $("page").innerHTML = `<div class="card"><p class="error">Couldn't load goals. Check your connection.</p></div>`; return; }
-  if (!goals) { $("page").innerHTML = `<div class="card"><p class="muted">No goals added yet.</p></div>` + editBtn("ed-goals", "Add goals and skills"); $("ed-goals").onclick = () => goalsEditor(client); return; }
-  LEVELS = [["own", goals.ownLabel || "On his own"], ["help", "With help"], ["not", "Not today"]];
-  draft = { date: dateKey(new Date()), ratings: {}, note: "" }; openSkill = null;
-  unsub = onSnapshot(collection(db, "clients", client.id, "logs"), (snap) => {
-    logs = snap.docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => (b.date || "").localeCompare(a.date || "") || (b.at || 0) - (a.at || 0));
-    drawGoals(client);
-  }, () => { logs = []; drawGoals(client); });
+  try {
+    const [a, b] = await Promise.all([getDoc(doc(db, "clients", client.id, "info", "goals")), getDoc(doc(db, "clients", client.id, "info", "goals2"))]);
+    goals = a.exists() ? a.data() : null; g2 = b.exists() ? b.data().goals || [] : [];
+  } catch (e) { $("page").innerHTML = `<div class="card"><p class="error">Couldn't load goals. Check your connection.</p></div>`; return; }
+  unsub = onSnapshot(collection(db, "clients", client.id, "sessions"), (snap) => {
+    sessions = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    checkMet(client); drawGoals(client);
+  }, () => { sessions = []; drawGoals(client); });
 }
-const allSkills = () => (goals.groups || []).flatMap((g) => g.items);
-// Group title shown before the first skill of each group (only when there's more than one group)
-function groupHead(id) { const gs = goals.groups || []; if (gs.length < 2) return ""; const g = gs.find((x) => x.items[0] && x.items[0].id === id); return g ? `<h3 class="grp">${esc(g.g)}</h3>` : ""; }
-function trendFor(id) {
-  const r = logs.filter((l) => l.ratings && l.ratings[id]).map((l) => ({ v: l.ratings[id], date: l.date })); // newest first
-  const score = (v) => (v === "own" ? 2 : v === "help" ? 1 : 0);
-  const last4 = r.slice(0, 4), prev4 = r.slice(4, 8);
-  const avg = (a) => a.reduce((s, x) => s + score(x.v), 0) / (a.length || 1);
-  let trend = "";
-  if (last4.length && prev4.length) { const d = avg(last4) - avg(prev4); trend = d > 0.25 ? "up" : d < -0.25 ? "down" : "same"; }
-  return { recent: r.slice(0, 8).reverse(), last: r[0], trend, count: r.length };
+// When a checkpoint is met, mark it (with the date) so the next one starts
+async function checkMet(client) {
+  let changed = false;
+  g2 = g2.map((g) => { const s = g2Stat(g); if (!s.met) return g; changed = true;
+    return { ...g, steps: g.steps.map((x) => (x === s.cp ? { ...x, metAt: todayKey() } : x)) }; });
+  if (changed) try { await setDoc(doc(db, "clients", client.id, "info", "goals2"), { goals: g2 }, { merge: true }); } catch (e) {}
+}
+function reportsDue() {
+  const t = todayKey(), soon = addMonths(t, 1), out = [];
+  g2.forEach((g) => { if (!g.start) return; for (let m = 6; m <= 36; m += 6) { const due = addMonths(g.start, m); if (due >= addMonths(t, -1) && due <= soon) { out.push(due); break; } } });
+  return [...new Set(out)].sort();
 }
 function drawGoals(client) {
-  const skills = allSkills();
-  const picked = Object.keys(draft.ratings).length;
-  const nameOf = (id) => (skills.find((s) => s.id === id) || {}).t || id;
-  const work = goals.work || {};
-  $("page").innerHTML = `
-    <div class="card focus-card">
-      <h2>Focus</h2><p>${esc(goals.focus || "")}</p>
-      ${work.goal ? `<h3>Work goal</h3><p>${esc(work.goal)}</p>${(work.places || []).length ? `<p class="muted small">Places to look: ${esc(work.places.join(" · "))}</p>` : ""}` : ""}
-    </div>
-    <div class="card">
-      <h2>Log a shift</h2>
-      <p class="hint">Tap each skill you worked on, then choose how it went.</p>
-      <label class="due-label">Date <input id="log-date" type="date" value="${esc(draft.date)}"></label>
-      <div class="skill-pick">
-        ${skills.map((s) => { const v = draft.ratings[s.id]; const gh = groupHead(s.id);
-          return `${gh}<div class="skill-item${v ? " rated" : ""}">
-            <button class="skill-name" data-open="${s.id}"><span>${esc(s.t)}${s.note ? `<small class="skill-note">${esc(s.note)}</small>` : ""}</span>${v ? `<span class="lvl ${v}">${LEVELS.find((l) => l[0] === v)[1]}</span>` : ""}</button>
-            ${openSkill === s.id ? `<div class="lvl-row">${LEVELS.map(([k, l]) => `<button class="lvl-btn ${k}" aria-pressed="${v === k}" data-rate="${s.id}" data-lvl="${k}">${l}</button>`).join("")}${v ? `<button class="link" data-clear="${s.id}">Clear</button>` : ""}</div>` : ""}
-          </div>`; }).join("")}
-      </div>
-      <label for="log-note">Note (optional)</label>
-      <textarea id="log-note" rows="3" placeholder="How did the shift go?">${esc(draft.note)}</textarea>
-      <button id="log-save" class="btn primary" ${picked ? "" : "disabled"}>Save${picked ? ` (${picked} skill${picked > 1 ? "s" : ""})` : ""}</button>
-      <div id="log-msg" class="small" role="status"></div>
-    </div>
-    <div class="card">
-      <h2>Progress</h2>
-      <p class="hint">Last 8 times each skill was logged. <span class="dot own"></span> on his own <span class="dot help"></span> with help <span class="dot not"></span> not today</p>
-      ${skills.map((s) => { const t = trendFor(s.id);
-        return `${groupHead(s.id)}<div class="prog-row"><div class="prog-name">${esc(s.t)}${t.last ? `<div class="muted small">Last: ${esc(t.last.date)}</div>` : ""}</div>
-          <div class="prog-dots">${t.recent.map((x) => `<span class="dot ${x.v}" title="${esc(x.date)}"></span>`).join("") || `<span class="muted small">Not logged yet</span>`}</div>
-          <div class="prog-trend">${t.trend === "up" ? "↑ Growing" : t.trend === "down" ? "↓ Slipping" : t.trend === "same" ? "→ Steady" : ""}</div></div>`; }).join("")}
-    </div>
-    <div class="card">
-      <details ${logsOpen ? "open" : ""} id="logs-box"><summary><h2>Shift notes <span class="count">${logs.length}</span></h2></summary>
-      ${logs.map((l) => `<div class="log-row"><div class="log-head"><b>${esc(l.date)}</b> <span class="muted small">· ${esc(l.byName || l.by || "")}</span>${me.admin ? `<button class="link del" data-del="${esc(l.id)}">Delete</button>` : ""}</div>
-        <div class="small">${Object.entries(l.ratings || {}).map(([k, v]) => `<span class="lvl ${v}">${esc(nameOf(k))}: ${LEVELS.find((x) => x[0] === v)?.[1] || v}</span>`).join(" ")}</div>
-        ${l.note ? `<p class="small">${esc(l.note)}</p>` : ""}</div>`).join("") || `<p class="muted">No shift notes yet.</p>`}</details>
-    </div>`;
-  const P = $("page");
-  P.insertAdjacentHTML("beforeend", editBtn("ed-goals", "Edit goals and skills"));
+  const P = $("page"), work = (goals && goals.work) || {};
+  const due = reportsDue();
+  P.innerHTML = `
+    ${goals && goals.focus ? `<div class="card focus-card"><h2>Focus</h2><p>${esc(goals.focus)}</p>${work.goal ? `<h3>Work goal</h3><p>${esc(work.goal)}</p>` : ""}</div>` : ""}
+    ${due.length ? `<div class="card notice"><b>📋 Progress report due ${esc(niceDate(due[0]))}</b><p class="small">The report pulls together each goal's start, where it is now, and the checkpoints met.</p><button class="btn primary" id="mk-report" type="button">Make the report</button></div>` : ""}
+    ${g2.length ? "" : `<div class="card"><p class="muted">No goals yet. Tap "Add a goal" below to pick one from the skill list.</p></div>`}
+    ${g2.map((g) => goalCard(g)).join("")}
+    <div class="row-btns">${editBtn("g2-add", "Add a goal")}${editBtn("ed-goals", "Edit focus and skill list")}${g2.length ? `<button class="btn" id="mk-report2" type="button">📋 Progress report</button>` : ""}</div>`;
   $("ed-goals").onclick = () => goalsEditor(client);
-  $("log-date").onchange = (e) => (draft.date = e.target.value);
-  $("log-note").oninput = (e) => (draft.note = e.target.value);
-  P.querySelectorAll("[data-open]").forEach((b) => (b.onclick = () => { openSkill = openSkill === b.dataset.open ? null : b.dataset.open; drawGoals(client); }));
-  P.querySelectorAll("[data-rate]").forEach((b) => (b.onclick = () => { draft.ratings[b.dataset.rate] = b.dataset.lvl; openSkill = null; drawGoals(client); }));
-  P.querySelectorAll("[data-clear]").forEach((b) => (b.onclick = () => { delete draft.ratings[b.dataset.clear]; drawGoals(client); }));
-  P.querySelectorAll("[data-del]").forEach((b) => (b.onclick = async () => { if (confirm("Delete this shift note?")) await deleteDoc(doc(db, "clients", client.id, "logs", b.dataset.del)); }));
-  $("logs-box").ontoggle = (e) => (logsOpen = e.target.open);
-  $("log-save").onclick = async () => {
-    if (!Object.keys(draft.ratings).length) return;
-    $("log-save").disabled = true;
+  $("g2-add").onclick = () => { g2Edit = { i: -1 }; goal2Editor(client); };
+  [$("mk-report"), $("mk-report2")].forEach((b) => b && (b.onclick = () => showReport(client)));
+  P.querySelectorAll("[data-gopen]").forEach((el) => (el.ontoggle = () => (goalOpen[el.dataset.gopen] = el.open)));
+  P.querySelectorAll("[data-gedit]").forEach((b) => (b.onclick = () => { g2Edit = { i: g2.findIndex((g) => g.id === b.dataset.gedit) }; goal2Editor(client); }));
+  P.querySelectorAll("[data-prompt]").forEach((sel) => (sel.onchange = () => { const s = tapState[sel.dataset.prompt] = tapState[sel.dataset.prompt] || { taps: [], p: "ind" }; s.p = sel.value; }));
+  P.querySelectorAll("[data-tap]").forEach((b) => (b.onclick = () => {
+    const [gid, r] = b.dataset.tap.split("|"); const s = tapState[gid] = tapState[gid] || { taps: [], p: "ind" };
+    if (r === "undo") s.taps.pop(); else s.taps.push({ r, p: s.p });
+    drawGoals(client);
+  }));
+  P.querySelectorAll("[data-gsave]").forEach((b) => (b.onclick = async () => {
+    const gid = b.dataset.gsave, s = tapState[gid]; if (!s || !s.taps.length) return;
+    b.disabled = true;
     try {
-      const id = "l" + Date.now().toString(36);
-      await setDoc(doc(db, "clients", client.id, "logs", id), { date: draft.date || dateKey(new Date()), ratings: draft.ratings, note: draft.note.trim(), by: me.user.email, byName: me.user.displayName || me.user.email, at: Date.now() });
-      draft = { date: dateKey(new Date()), ratings: {}, note: "" };
-    } catch (e) { $("log-msg").textContent = "Didn't save. Check your connection and try again."; $("log-msg").className = "small error"; $("log-save").disabled = false; }
+      await setDoc(doc(db, "clients", client.id, "sessions", "s" + Date.now().toString(36)), { goal: gid, date: todayKey(), taps: s.taps, by: me.user.email, byName: me.user.displayName || me.user.email, at: Date.now() });
+      tapState[gid] = { taps: [], p: s.p };
+    } catch (e) { b.disabled = false; alert("Didn't save. Check your connection and try again."); }
+  }));
+}
+function goalCard(g) {
+  const s = g2Stat(g), cp = s.cp, st = tapState[g.id] || { taps: [], p: "ind" };
+  const plus = st.taps.filter((t) => t.r === "+").length, n = st.taps.length;
+  const doneAll = !cp;
+  const met = (g.steps || []).filter((x) => x.metAt).length;
+  return `<div class="card goal2">
+    <div class="svc-top"><h2 style="font-size:1.05rem">${esc(g.t)}</h2>${doneAll ? `<span class="who staff">★ All met</span>` : `<span class="who you">${s.hit} of 4 days</span>`}</div>
+    ${cp ? `<p class="small" style="margin:0 0 8px"><b>Checkpoint ${met + 1} of ${(g.steps || []).length}:</b> ${cp.pct}% by ${esc(niceDate(cp.by))}, with ${esc(pName(cp.prompt).toLowerCase())} help or less</p>` : `<p class="small muted">Every checkpoint is met. Time to set a new goal.</p>`}
+    <div class="day-chips">${s.last5.map((d) => `<span class="chip ${cp && d.pct >= cp.pct ? "good" : "low"}" title="${d.n} trials">${esc(d.date.slice(5).replace("-", "/"))} · ${d.pct}%</span>`).join("") || `<span class="muted small">No data yet</span>`}</div>
+    ${cp ? `<div class="tapper">
+      <label class="small">Help given <select data-prompt="${esc(g.id)}">${PROMPTS.map(([k, l]) => `<option value="${k}" ${st.p === k ? "selected" : ""}>${l}</option>`).join("")}</select></label>
+      <div class="tap-row"><button class="tap plus" data-tap="${esc(g.id)}|+" aria-label="Correct">＋</button><button class="tap minus" data-tap="${esc(g.id)}|-" aria-label="Incorrect">－</button>
+      <div class="tap-sum"><b>${plus} / ${n}</b>${n ? `<span class="small muted">${Math.round(plus / n * 100)}%</span>` : `<span class="small muted">tap per trial</span>`}</div></div>
+      ${n ? `<div class="tap-row"><button class="link" data-tap="${esc(g.id)}|undo">Undo last</button><button class="btn primary small" data-gsave="${esc(g.id)}">Save ${n} trial${n > 1 ? "s" : ""}</button></div>` : ""}
+    </div>` : ""}
+    <details data-gopen="${esc(g.id)}" ${goalOpen[g.id] ? "open" : ""}><summary class="small link">More about this goal</summary>
+      ${g.area ? `<p class="small"><b>Skill area:</b> ${esc(g.area)}</p>` : ""}${g.who ? `<p class="small"><b>Who works on it:</b> ${esc(g.who)}</p>` : ""}
+      <p class="small"><b>Started:</b> ${g.start ? esc(niceDate(g.start)) : "—"}${g.start ? ` · reports due ${esc(niceDate(addMonths(g.start, 6)))} and ${esc(niceDate(addMonths(g.start, 12)))}` : ""}</p>
+      <ul class="tasks">${(g.steps || []).map((x) => `<li><b>${esc(niceDate(x.by))}</b> · ${x.pct}% · ${esc(pName(x.prompt))} or less${x.metAt ? ` · <span class="ok">★ met ${esc(niceDate(x.metAt))}</span>` : ""}</li>`).join("")}</ul>
+      <button class="link" data-gedit="${esc(g.id)}">Change this goal</button>
+    </details>
+  </div>`;
+}
+
+// ---------- Add or change a goal ----------
+function goal2Editor(client) {
+  stopLive();
+  const skills = ((goals && goals.groups) || []).flatMap((gr) => gr.items.map((it) => ({ ...it, area: gr.g })));
+  const isNew = g2Edit.i < 0, g = isNew ? null : g2[g2Edit.i];
+  const start = g ? g.start : todayKey();
+  const steps = g ? g.steps : [3, 6, 9, 12].map((m) => ({ by: addMonths(start, m), pct: 80, prompt: m <= 3 ? "mod" : m <= 6 ? "ver" : m <= 9 ? "ges" : "ind" }));
+  $("page").innerHTML = backBar(isNew ? "Add a goal" : "Change this goal") + `<form id="g2-form" class="card">
+    ${isNew && skills.length ? `<label for="g2-skill">Pick from the skill list</label><select id="g2-skill"><option value="">Choose a skill…</option>${skills.map((s) => `<option value="${esc(s.id)}">${esc(s.area)} · ${esc(s.t)}</option>`).join("")}</select>` : ""}
+    <label for="g2-t">The goal, in plain words</label><textarea id="g2-t" rows="2" required placeholder="Makes a grocery list from his menu, on his own">${esc(g ? g.t : "")}</textarea>
+    <label for="g2-who">Who works on it (optional)</label><input id="g2-who" value="${esc(g ? g.who || "" : "")}" placeholder="ILS staff, Jay">
+    <label for="g2-start">Start date</label><input id="g2-start" type="date" value="${esc(start)}">
+    <h3 style="margin:16px 0 4px">Checkpoints (every 3 months)</h3>
+    <p class="hint">Each one: the % to reach, and the most help allowed. A good plan steps the help down over the year.</p>
+    ${steps.map((x, i) => `<div class="cp-row"><b>${i + 1}</b><input type="date" data-cpby="${i}" value="${esc(x.by)}" aria-label="Checkpoint ${i + 1} date"><input type="number" min="1" max="100" data-cppct="${i}" value="${x.pct}" aria-label="Target %"><span class="small">%</span><select data-cpp="${i}" aria-label="Most help allowed">${PROMPTS.map(([k, l]) => `<option value="${k}" ${x.prompt === k ? "selected" : ""}>${l}</option>`).join("")}</select>${x.metAt ? `<span class="small ok">★</span>` : ""}</div>`).join("")}
+    <div class="add-row" style="margin-top:14px">${isNew ? "" : `<button class="btn" type="button" id="g2-del" style="color:var(--error)">Delete goal</button>`}<button class="btn primary" type="submit">Save</button></div>
+    <div id="g2-msg" class="small error" role="status"></div></form>`;
+  wireDone(() => { g2Edit = null; renderGoals(client); });
+  if ($("g2-skill")) $("g2-skill").onchange = (e) => { const s = skills.find((x) => x.id === e.target.value); if (s && !val("g2-t")) $("g2-t").value = s.t; };
+  // moving the start date moves the checkpoints with it (for a new goal)
+  $("g2-start").onchange = () => { if (!isNew) return; [3, 6, 9, 12].forEach((m, i) => { const el = document.querySelector(`[data-cpby="${i}"]`); if (el) el.value = addMonths($("g2-start").value, m); }); };
+  if ($("g2-del")) $("g2-del").onclick = async () => { if (!confirm("Delete this goal? Its data stays saved but won't show.")) return; g2 = g2.filter((_, j) => j !== g2Edit.i); await setDoc(doc(db, "clients", client.id, "info", "goals2"), { goals: g2 }); g2Edit = null; renderGoals(client); };
+  $("g2-form").onsubmit = async (e) => {
+    e.preventDefault();
+    if (!val("g2-t")) return ($("g2-msg").textContent = "Write the goal first.");
+    const sk = $("g2-skill") ? skills.find((x) => x.id === $("g2-skill").value) : null;
+    const st2 = steps.map((x, i) => ({ ...x, by: document.querySelector(`[data-cpby="${i}"]`).value, pct: +document.querySelector(`[data-cppct="${i}"]`).value || 80, prompt: document.querySelector(`[data-cpp="${i}"]`).value }));
+    const item = { ...(g || { id: newId("g") }), t: val("g2-t"), who: val("g2-who"), start: $("g2-start").value || todayKey(), steps: st2 };
+    if (sk) { item.skill = sk.id; item.area = sk.area; }
+    const next = g2.slice(); if (isNew) next.push(item); else next[g2Edit.i] = item;
+    try { await setDoc(doc(db, "clients", client.id, "info", "goals2"), { goals: next }); g2 = next; g2Edit = null; renderGoals(client); }
+    catch (err) { $("g2-msg").textContent = "Didn't save. Check your connection."; }
   };
+}
+
+// ---------- Progress report (every 6 months) ----------
+function showReport(client) {
+  stopLive();
+  const label = (me.clients.find((c) => c.id === client.id) || client).label;
+  const rows = g2.map((g) => {
+    const all = dayScores(g, null), first = all.slice(0, 5), last = all.slice(-5);
+    const avg = (a) => (a.length ? Math.round(a.reduce((t, d) => t + d.pct, 0) / a.length) : null);
+    const met = (g.steps || []).filter((x) => x.metAt), cp = curCheckpoint(g);
+    return `<div class="report-goal"><h3>${esc(g.t)}</h3>
+      <p><b>Started:</b> ${g.start ? esc(niceDate(g.start)) : "—"} · <b>Days with data:</b> ${all.length}</p>
+      <p><b>At the start:</b> ${avg(first) == null ? "no data" : avg(first) + "% (first " + first.length + " days)"} · <b>Now:</b> ${avg(last) == null ? "no data" : avg(last) + "% (last " + last.length + " days)"}</p>
+      <p><b>Checkpoints met:</b> ${met.length} of ${(g.steps || []).length}${met.length ? " (" + met.map((x) => x.pct + "% with " + pName(x.prompt).toLowerCase() + " help, met " + niceDate(x.metAt)).join("; ") + ")" : ""}</p>
+      <p><b>Working on now:</b> ${cp ? cp.pct + "% by " + niceDate(cp.by) + ", with " + pName(cp.prompt).toLowerCase() + " help or less" : "all checkpoints met"}</p></div>`;
+  }).join("");
+  $("page").innerHTML = backBar("Progress report") + `<div class="card report"><h2>${esc(label)} · Progress report</h2><p class="muted">${esc(new Date().toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" }))}</p>${rows || "<p>No goals yet.</p>"}
+    <p class="hint">To save or send it: tap Share in Safari, then Print or Save to Files.</p></div>`;
+  wireDone(() => renderGoals(client));
 }
 
 // ---------------- Page 5: Services ----------------
