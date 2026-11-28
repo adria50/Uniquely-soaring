@@ -539,25 +539,58 @@ async function renderSchedule(client) {
   try { await loadSchedule(client); } catch (e) { $("page").innerHTML = `<div class="card"><p class="error">Couldn't load the schedule. Check your connection.</p></div>`; return; }
   drawSchedule(client);
 }
-function gridHTML(days) {
+// Family colors, the same for all three kids:
+// blue IHSS/overnight · green weekend respite · gray school/day program/internship ·
+// teal after school, Edward's morning routine, evening skills · purple personal assistance ·
+// red not scheduled or not covered · yellow no support needed
+const CAL = {
+  ihss: ["IHSS and overnight", "#cfe2ff", "#2b5ea8"],
+  resp: ["Weekend respite", "#d4f0d8", "#2e7d3e"],
+  prog: ["School, day program, internship", "#e3e3e3", "#555"],
+  teal: ["After school, morning routine, evening skills", "#cdeef0", "#1f7a82"],
+  pa: ["Personal assistance", "#eadcff", "#6a3fb5"],
+  free: ["No support needed", "#fff1bf", "#7a5c00"],
+  gap: ["Not scheduled or not covered", "#fde2df", "#b4372f"]
+};
+function calKind(it, clientId) {
+  if (it.open) return "gap";
+  const t = it.t || "", c = it.cover || "", both = t + " " + c;
+  if (/respite/i.test(both)) return "resp";
+  if (/free time|asleep|own time|on (her|his) own|dinner and hygiene/i.test(t)) return "free";
+  if (/after.?school|evening skills|\bILS\b|\bAST\b|ABA/i.test(both) || (clientId === "EdW" && /morning/i.test(t))) return "teal";
+  if (/IHSS|overnight|weekend with/i.test(both)) return "ihss";
+  if (/school|day program|internship|ethos|pawa|basketball/i.test(t)) return "prog";
+  if (/personal assistance|\bPA\b/i.test(both)) return "pa";
+  return c ? "pa" : "prog";
+}
+function gridHTML(days, clientId) {
   const H = 22; // px per hour
   const hours = Array.from({ length: 25 }, (_, h) => `<div class="g-line" style="top:${h * H}px"></div>${h < 24 ? `<div class="g-hr" style="top:${h * H}px">${(h % 12) || 12}${h < 12 ? "a" : "p"}</div>` : ""}`).join("");
-  const cols = days.map((d, i) => {
+  const used = new Set();
+  const cols = days.map((d) => {
     const pieces = [];
     itemsOn(d).forEach((it) => {
       if (!it.s) return;
       const s = mins(it.s), e = it.e === "24:00" ? 1440 : mins(it.e);
-      if (e > s) pieces.push([s, e, it]); else { pieces.push([s, 1440, it]); }
+      pieces.push([s, e > s ? e : 1440, it]);
     });
     // overnight blocks from the day before that run past midnight
     const prev = new Date(d); prev.setDate(prev.getDate() - 1);
     itemsOn(prev).forEach((it) => { if (it.s && it.e !== "24:00" && mins(it.e) <= mins(it.s) && mins(it.e) > 0) pieces.push([0, mins(it.e), it]); });
-    const bl = pieces.map(([s, e, it]) => { const k = coverOf(it).kind;
-      return `<div class="g-block ${k}" style="top:${s / 60 * H}px;height:${Math.max(14, (e - s) / 60 * H - 2)}px" title="${esc(it.t)} · ${esc(coverOf(it).who)}"><b>${esc(it.t)}</b>${(e - s) >= 90 ? `<span>${esc(coverOf(it).who)}</span>` : ""}</div>`; }).join("");
+    // red for any hour nothing covers
+    const gaps = []; let at = 0;
+    pieces.slice().sort((a, b) => a[0] - b[0]).forEach(([s, e]) => { if (s > at) gaps.push([at, s]); at = Math.max(at, e); });
+    if (at < 1440) gaps.push([at, 1440]);
+    const box = (s, e, k, title, who) => { used.add(k);
+      return `<div class="g-block" style="top:${s / 60 * H}px;height:${Math.max(14, (e - s) / 60 * H - 2)}px;background:${CAL[k][1]};color:${CAL[k][2]}" title="${esc(title)}${who ? " · " + esc(who) : ""}"><b>${esc(title)}</b>${(e - s) >= 90 && who ? `<span>${esc(who)}</span>` : ""}</div>`; };
+    const bl = pieces.map(([s, e, it]) => { const k = calKind(it, clientId), cv = coverOf(it);
+      return box(s, e, k, it.t, k === "free" || k === "prog" && cv.kind === "program" ? "" : (k === "gap" && cv.who !== "No one yet" ? cv.who + " covers" : cv.who)); }).join("")
+      + gaps.filter(([s, e]) => e - s >= 15).map(([s, e]) => box(s, e, "gap", "Not scheduled", "")).join("");
     return `<div class="g-col"><div class="g-head">${DAYS[d.getDay()].slice(0, 3)}<small>${d.getMonth() + 1}/${d.getDate()}</small></div><div class="g-body" style="height:${24 * H}px">${bl}</div></div>`;
   }).join("");
+  const legend = Object.keys(CAL).filter((k) => used.has(k)).map((k) => `<span class="cal-key"><i style="background:${CAL[k][1]};border-color:${CAL[k][2]}"></i>${CAL[k][0]}</span>`).join("");
   return `<div class="grid-wrap"><div class="g-hours"><div class="g-head"></div><div class="g-body" style="height:${24 * H}px">${hours}</div></div>${cols}</div>
-    <div class="legend"><span class="who staff">Staff</span><span class="who you">Adria</span><span class="who prog">Program</span><span class="who gap">Not covered</span></div>`;
+    <div class="legend">${legend}</div>`;
 }
 function drawSchedule(client) {
   if (!sched.current.length && !sched.sdp.length) { $("page").innerHTML = `<div class="card"><p class="muted">No schedule yet.</p></div>` + editBtn("ed-sched", "Add a schedule"); $("ed-sched").onclick = () => { edPlan = "current"; edItem = -1; scheduleEditor(client); }; return; }
@@ -573,7 +606,7 @@ function drawSchedule(client) {
       <div class="week-nav"><button class="day" data-wk="-1" aria-label="Previous week">‹</button><h2>${fmt(days[0])} – ${fmt(days[6])}</h2><button class="day" data-wk="1" aria-label="Next week">›</button></div>
       <div class="days">${planBtns}</div>
       <p class="hint">${schedPlan === "auto" ? (sw ? `Current schedule until ${sw}, then the SDP plan.` : "Current schedule.") : schedPlan === "sdp" ? "Showing the SDP plan for every day." : "Showing the current schedule for every day."}</p>
-      <details class="grid-box" ${gridOpen ? "open" : ""} id="grid-box"><summary><span>📅 Week grid</span><span class="muted small">tap to ${gridOpen ? "close" : "open"}</span></summary>${gridOpen ? gridHTML(days) : ""}</details>
+      <details class="grid-box" ${gridOpen ? "open" : ""} id="grid-box"><summary><span>📅 Week view</span><span class="muted small">tap to ${gridOpen ? "close" : "open"}</span></summary>${gridOpen ? gridHTML(days, client.id) : ""}</details>
     </div>
     ${days.map((d) => { const items = itemsOn(d);
       return `<div class="card day-card${dateKey(d) === today ? " is-today" : ""}"><h2>${DAYS[d.getDay()]} <span class="muted small">${fmt(d)}${dateKey(d) === today ? " · today" : ""}</span></h2>

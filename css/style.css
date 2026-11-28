@@ -170,6 +170,8 @@ textarea { width: 100%; padding: 10px 14px; font: inherit; font-size: .9rem; col
 .g-block.gap { background: repeating-linear-gradient(45deg, #fbe0dc 0 6px, #f8d2cc 6px 12px); color: var(--error); }
 .legend { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
 .legend .who { max-width: none; }
+.cal-key { display: flex; align-items: center; gap: 6px; font-size: .82rem; margin-right: 8px; }
+.cal-key i { width: 14px; height: 14px; border-radius: 4px; border: 1px solid; display: inline-block; }
 .day-card.is-today { border-left: 5px solid var(--sky); }
 .day-card h2 { gap: 10px; }
 .tasks { margin: 6px 0 0; padding-left: 18px; font-size: .88rem; }
