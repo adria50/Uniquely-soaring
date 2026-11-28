@@ -1353,6 +1353,57 @@ async function importText(text) {
   }
 }
 
+// ---------------- Copy for Claude (Adria only) ----------------
+// Gathers everything saved for every client so Adria can paste it to Claude to check.
+const plain = (v) => {
+  if (v && typeof v.toDate === "function") return v.toDate().toISOString();
+  if (Array.isArray(v)) return v.map(plain);
+  if (v && typeof v === "object") return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, plain(x)]));
+  return v;
+};
+async function gatherForClaude() {
+  const out = { kind: "uniquely-soaring-snapshot", takenAt: new Date().toISOString(), clients: {} };
+  const ids = (await getDocs(collection(db, "clients"))).docs.map((d) => d.id);
+  for (const id of ids) {
+    const c = {};
+    const top = await getDoc(doc(db, "clients", id)).catch(() => null);
+    c.client = top && top.exists() ? plain(top.data()) : null;
+    for (const sub of ["todos", "schedule", "staff", "info", "people"]) {
+      const snap = await getDocs(collection(db, "clients", id, sub)).catch(() => null);
+      if (snap && !snap.empty) c[sub] = Object.fromEntries(snap.docs.map((d) => [d.id, plain(d.data())]));
+    }
+    if (id === "SUP" && c.people) {
+      for (const pid of Object.keys(c.people)) {
+        const t = await getDocs(collection(db, "clients", "SUP", "people", pid, "todos")).catch(() => null);
+        if (t && !t.empty) c.people[pid].todos = Object.fromEntries(t.docs.map((d) => [d.id, plain(d.data())]));
+      }
+    }
+    for (const sub of ["sessions", "iepdata"]) {
+      const snap = await getDocs(collection(db, "clients", id, sub)).catch(() => null);
+      if (snap && !snap.empty) c[sub + "Count"] = snap.size;
+    }
+    out.clients[id] = c;
+  }
+  return JSON.stringify(out);
+}
+$("copy-claude").onclick = async () => {
+  const msg = $("copy-msg"), box = $("copy-out");
+  msg.textContent = "Gathering everything…"; msg.className = "small";
+  box.hidden = true;
+  const job = gatherForClaude();
+  try {
+    // Safari needs the copy to start right on the tap, so hand it the work in progress
+    await navigator.clipboard.write([new ClipboardItem({ "text/plain": job.then((t) => new Blob([t], { type: "text/plain" })) })]);
+    msg.textContent = "Copied ✓ Now paste it in your chat with Claude."; msg.className = "small ok";
+  } catch (e) {
+    try {
+      const t = await job;
+      box.value = t; box.hidden = false; box.focus(); box.select();
+      msg.textContent = "Tap in the box, Select All, then Copy, and paste it to Claude."; msg.className = "small";
+    } catch (e2) { msg.textContent = "Couldn't gather it. Tell Claude what happened."; msg.className = "small error"; }
+  }
+};
+
 // ---------------- Start ----------------
 onAuthStateChanged(auth, async (user) => {
   stopLive();

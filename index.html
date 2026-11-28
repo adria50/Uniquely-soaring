@@ -73,6 +73,9 @@
           <label class="link file-link" for="import-file">or pick a file</label>
           <input id="import-file" type="file" accept=".json,application/json" hidden>
           <div id="import-msg" role="status" aria-live="polite"></div>
+          <button id="copy-claude" class="btn" type="button">Copy for Claude</button>
+          <div id="copy-msg" class="small" role="status" aria-live="polite"></div>
+          <textarea id="copy-out" rows="4" readonly hidden></textarea>
         </div>
         <button class="btn" type="button" data-signout>Sign out</button>
       </div>
@@ -88,6 +91,6 @@
       <button class="btn signout-bottom" type="button" data-signout>Sign out</button>
     </section>
   </main>
-  <script type="module" src="js/app.js?v=24"></script>
+  <script type="module" src="js/app.js?v=25"></script>
 </body>
 </html>
